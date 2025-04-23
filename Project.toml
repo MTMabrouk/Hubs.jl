@@ -1,0 +1,9 @@
+name = "Hubs"
+uuid = "f5fceb73-99ef-43eb-be5b-0c9a73778e2e"
+authors = ["m17mabro <mohamed-tahar.mabrouk@imt-atlantique.fr>"]
+version = "0.1.0"
+
+[deps]
+Gurobi = "2e9cd046-0924-5485-92f1-d5272153d98b"
+JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"

@@ -1,0 +1,18 @@
+# Local research and reference material
+/CODEBASE_REFERENCE.md
+/BIBLIOGRAPHY.md
+/biblio/
+/bibliography/
+/reference/
+/references/
+*.bib
+
+# Local agent configuration and workflow artifacts
+AGENTS.md
+CLAUDE.md
+/.agents/
+/.codex/
+/.claude/
+/.cursor/
+/docs/superpowers/
+/.github/copilot-instructions.md

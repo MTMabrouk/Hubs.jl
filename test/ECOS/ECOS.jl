@@ -1,5 +1,5 @@
 
-using XLSX, Plots, CSV, JuMP, MAT
+using XLSX, Plots, CSV, JuMP, MAT, HiGHS
 
 # --------------------------------------------------------------------------- #
 # # # # # # # # #<=|Defining Time steps and Number of Hubs|=># # # # # # # # #  
@@ -27,7 +27,7 @@ Hubs.addUnitFromTemplate(MCN, Desal_Fake_Hub3, 3)
 Power_Max_FC_Hub1 = 1.0e7; # (kW) Maximum FC electrical production
 Eff_FC_Tot_Hub1 = 0.75; # (%) FC total efficiency
 Eff_FC_Elec_Hub1 = 0.50; # (%) FC electrical efficiency
-FC_Hub1 = Hubs.ConversionUnitTemplate("FC_Hub1", ["H2_HP"], ["Electricity", "Heat_HT"], Eff_FC_Tot_Hub1, [1.0], [Eff_FC_Elec_Hub1 / Eff_FC_Tot_Hub1, 1 - Eff_FC_Elec_Hub1 / Eff_FC_Tot_Hub1], Pmax_out=[Power_Max_FC_Hub1, 0.0], capitalCost=1.0, MOCost=2.0)
+FC_Hub1 = Hubs.ConversionUnitTemplate("FC_Hub1", ["H2_HP"], ["Electricity", "Heat_HT"], Eff_FC_Tot_Hub1, [1.0], [Eff_FC_Elec_Hub1 / Eff_FC_Tot_Hub1, 1 - Eff_FC_Elec_Hub1 / Eff_FC_Tot_Hub1], Pmax_out=[Power_Max_FC_Hub1, 0.0], CapitalCost=1.0, MOCost=2.0)
 Hubs.addUnitFromTemplate(MCN, FC_Hub1, 1)
 
 Power_Max_Electrolyzer_Hub1 = 1.5e7; # (kW) Maximum electrolyzer electrical power
@@ -76,12 +76,12 @@ Hubs.addPorts(MCN, 1, "Pumpedhydro", :returnPorts, 0.0, 1.0e100)
 Area_PVT_Hub1 = 5.0e2; # (m2) PVT area
 Eff_PVT_Elec_Hub1 = 0.10; # (%) PVT electrical efficiency
 Eff_PVT_Heating_Hub1 = 0.40; # (%) PVT thermal efficiency
-Solar_Radiation_Hub1 = convert(Vector{Float64}, XLSX.readxlsx("Radiation.xlsx")["Radiation"][:][1:Nt, 1]); # (kW/m2) Solar radiation
+Solar_Radiation_Hub1 = convert(Vector{Float64}, XLSX.readxlsx(joinpath(@__DIR__, "Radiation.xlsx"))["Radiation"][:][1:Nt, 1]); # (kW/m2) Solar radiation
 PVT_Hub1 = Hubs.ConversionUnitTemplate("PVT_Hub1", ["SolarRadiation"], ["Electricity", "Heat_LT"], (Eff_PVT_Elec_Hub1 + Eff_PVT_Heating_Hub1), [1.0], [Eff_PVT_Elec_Hub1 / (Eff_PVT_Elec_Hub1 + Eff_PVT_Heating_Hub1), Eff_PVT_Heating_Hub1 / (Eff_PVT_Elec_Hub1 + Eff_PVT_Heating_Hub1)], Pmax_in=[max(Solar_Radiation_Hub1...) * Area_PVT_Hub1])
 Hubs.addUnitFromTemplate(MCN, PVT_Hub1, 1)
 
 Coef_WT_Hub1 = 1.0e2; # (kW*s3/m3) The coefficient represents (π/2 * r²  * ρ * η) in the WT power fodmula = Coef * v³
-Wind_Speed3_Hub1 = convert(Vector{Float64}, XLSX.readxlsx("WindSpeed3.xlsx")["WindSpeed3"][:][1:Nt, 1]); # (m3/s3) Wind speed ^3 with cut-in of 3m/s
+Wind_Speed3_Hub1 = convert(Vector{Float64}, XLSX.readxlsx(joinpath(@__DIR__, "WindSpeed3.xlsx"))["WindSpeed3"][:][1:Nt, 1]); # (m3/s3) Wind speed ^3 with cut-in of 3m/s
 WT_Hub1 = Hubs.ConversionUnitTemplate("WT_Hub1", ["Wind"], ["Electricity"], Coef_WT_Hub1, [1.0], [1.0], Pmax_out=[max(Wind_Speed3_Hub1...) * Coef_WT_Hub1])
 Hubs.addUnitFromTemplate(MCN, WT_Hub1, 1)
 
@@ -149,19 +149,19 @@ Energy_Max_Battery_Hub2 = 1.5e7; # (kWh) Maximum Battery capacity
 Eff_Battery_Hub2 = 0.85; # (%) Battery efficiency
 Hubs.addStorages(MCN, 2, "Electricity", Energy_Max_Battery_Hub2, Energy_Max_Battery_Hub2, efficiency=Eff_Battery_Hub2)
 
-Delta_Tin_Tout_House_Hub2 = convert(Vector{Float64}, XLSX.readxlsx("Tin_Tout_House.xlsx")["Tin_Tout"][:][1:Nt, 1]); # (K) Inside and outside temperature difference (8h00-22h00 Tin=20 else Tin=19)
+Delta_Tin_Tout_House_Hub2 = convert(Vector{Float64}, XLSX.readxlsx(joinpath(@__DIR__, "Tin_Tout_House.xlsx"))["Tin_Tout"][:][1:Nt, 1]); # (K) Inside and outside temperature difference (8h00-22h00 Tin=20 else Tin=19)
 Coef_Load_Heat_House_Hub2 = 230 / sum(Delta_Tin_Tout_House_Hub2); # (kW/m2/K) Energy consumption for heating per m2 which is devided into average DeltaTinTout
 Area_House_Hub2 = 20 * 5000.0; # (m2) Houses' area in the Hub2
 Power_Load_Heat_LT_Hub2 = Delta_Tin_Tout_House_Hub2 .* Coef_Load_Heat_House_Hub2 .* Area_House_Hub2; # (kW) Maximum thermal load power
 Hubs.addLoads(MCN, 2, "Heat_LT", Power_Load_Heat_LT_Hub2)
 
-Power_Load_Elec_Hub2_PerPerson = convert(Vector{Float64}, XLSX.readxlsx("Load_Elec_House.xlsx")["Load_Elec_House"][:][1:Nt, 1]); # (kW) Electrical load power per person (site data/France population 69390000)
+Power_Load_Elec_Hub2_PerPerson = convert(Vector{Float64}, XLSX.readxlsx(joinpath(@__DIR__, "Load_Elec_House.xlsx"))["Load_Elec_House"][:][1:Nt, 1]); # (kW) Electrical load power per person (site data/France population 69390000)
 Population_Hub2 = Area_House_Hub2 / 20; # Numper of person lives in Hub2 which is imagine 20m2 per person
 Power_Load_Elec_Hub2 = Power_Load_Elec_Hub2_PerPerson .* Population_Hub2;# (kW) Total electrical load in Hub2
 Hubs.addLoads(MCN, 2, "Electricity", Power_Load_Elec_Hub2)
 
 Load_Daily_PotableWater_Hub2 = Population_Hub2 * 352; # (L/day) Water consumption
-PotableWater_PartialUse_Hub2 = convert(Vector{Float64}, XLSX.readxlsx("Load_PotableWater_House.xlsx")["Load_PotableWater_House"][:][1:Nt, 1]); # (%) Hourly percentage of total daily water consumption
+PotableWater_PartialUse_Hub2 = convert(Vector{Float64}, XLSX.readxlsx(joinpath(@__DIR__, "Load_PotableWater_House.xlsx"))["Load_PotableWater_House"][:][1:Nt, 1]); # (%) Hourly percentage of total daily water consumption
 Load_PotableWater_Hub2 = PotableWater_PartialUse_Hub2 .* Load_Daily_PotableWater_Hub2; # (L) Potable water load                                            
 Hubs.addLoads(MCN, 2, "PotableWater", Load_PotableWater_Hub2)
 
@@ -214,7 +214,7 @@ Eff_CHP_Tot_Hub3 = 0.75; # (%) CHP total efficiency
 CHP_Hub3 = Hubs.ConversionUnitTemplate("CHP_Hub3", ["CH4"], ["Electricity", "Heat_HT"], Eff_CHP_Tot_Hub3, [1.0], [Eff_CHP_Elec_Hub3 / Eff_CHP_Tot_Hub3, 1 - Eff_CHP_Elec_Hub3 / Eff_CHP_Tot_Hub3], Pmax_out=[Power_Max_CHP_Hub3, 0.0])
 Hubs.addUnitFromTemplate(MCN, CHP_Hub3, 3)
 
-Delta_Tin_Tout_Office_Hub3 = convert(Vector{Float64}, XLSX.readxlsx("Tin_Tout_Office.xlsx")["Tin_Tout"][:][1:Nt, 1]); # (K) Inside and outside temperature difference (7h00-19h00 Tin=20 else and weekend Tin=15)
+Delta_Tin_Tout_Office_Hub3 = convert(Vector{Float64}, XLSX.readxlsx(joinpath(@__DIR__, "Tin_Tout_Office.xlsx"))["Tin_Tout"][:][1:Nt, 1]); # (K) Inside and outside temperature difference (7h00-19h00 Tin=20 else and weekend Tin=15)
 Coef_Load_Heat_Office_Hub3 = 230 / sum(Delta_Tin_Tout_Office_Hub3); # (kW/m2/K) Energy consumption for heating per m2 which is devided into average DeltaTinTout
 Area_Office_Hub3 = 10 * 2500; # (m2) Offices' area in the Hub3
 Power_Load_Heat_LT_Hub3 = Delta_Tin_Tout_Office_Hub3 .* Coef_Load_Heat_Office_Hub3 .* Area_Office_Hub3; # (kW) Maximum thermal load power
@@ -224,20 +224,20 @@ Power_Load_Elec_Hub3_PerPerson = Power_Load_Elec_Hub2_PerPerson .* 0.3; # (kW) E
 Population_Office_Hub3 = Area_Office_Hub3 / 10; # Numper of person lives in Hub2 which is imagine 20m2 per person
 Power_Load_Elec_Office_Hub3 = Power_Load_Elec_Hub3_PerPerson .* Population_Office_Hub3;# (kW) Total electrical load in Hub2
 
-Load_Elec_PerIndustry_Hub3 = convert(Vector{Float64}, XLSX.readxlsx("Load_Elec_Industrial.xlsx")["Load_Elec_Industrial"][:][1:Nt, 1]); # (kW) Electrical load power for one industry
+Load_Elec_PerIndustry_Hub3 = convert(Vector{Float64}, XLSX.readxlsx(joinpath(@__DIR__, "Load_Elec_Industrial.xlsx"))["Load_Elec_Industrial"][:][1:Nt, 1]); # (kW) Electrical load power for one industry
 NumberofIndustries_Elec_Hub3 = 10.0;
 Power_Load_Elec_Industry_Hub3 = Load_Elec_PerIndustry_Hub3 .* NumberofIndustries_Elec_Hub3; # (kW) Electrical load in Hub3
 
 Power_Load_Elec_Hub3 = Power_Load_Elec_Industry_Hub3 + Power_Load_Elec_Office_Hub3;
 Hubs.addLoads(MCN, 3, "Electricity", Power_Load_Elec_Hub3)
 
-Load_Heat_PerIndustry_Hub3 = convert(Vector{Float64}, XLSX.readxlsx("Load_Heat_Industrial.xlsx")["Load_Heat_Industrial"][:][1:Nt, 1]); # (kW) Electrical load power for one industry
+Load_Heat_PerIndustry_Hub3 = convert(Vector{Float64}, XLSX.readxlsx(joinpath(@__DIR__, "Load_Heat_Industrial.xlsx"))["Load_Heat_Industrial"][:][1:Nt, 1]); # (kW) Electrical load power for one industry
 NumberofIndustries_Heat_Hub3 = 15.0;
 Power_Load_Heat_HT_Hub3 = Load_Heat_PerIndustry_Hub3 .* NumberofIndustries_Heat_Hub3; # (kW) Electrical load in Hub3
 Hubs.addLoads(MCN, 3, "Heat_HT", Power_Load_Heat_HT_Hub3)
 
 Load_Daily_PotableWater_Hub3 = Population_Office_Hub3 * 352 * 0.59; # (L/day) Water consumption - The precentage of the water is generally is used by offices compared to houses was 0.59
-PotableWater_PartialUse_Hub3 = convert(Vector{Float64}, XLSX.readxlsx("Load_PotableWater_Office.xlsx")["Load_PotableWater_Office"][:][1:Nt, 1]); # (%) Hourly percentage of total daily water consumption
+PotableWater_PartialUse_Hub3 = convert(Vector{Float64}, XLSX.readxlsx(joinpath(@__DIR__, "Load_PotableWater_Office.xlsx"))["Load_PotableWater_Office"][:][1:Nt, 1]); # (%) Hourly percentage of total daily water consumption
 Load_PotableWater_Hub3 = PotableWater_PartialUse_Hub3 .* Load_Daily_PotableWater_Hub3; # (L) Potable water load                                            
 Hubs.addLoads(MCN, 3, "PotableWater", Load_PotableWater_Hub3)
 
@@ -264,12 +264,14 @@ Hubs.addPorts(MCN, 3, "Heat_LT", :sellPorts, 0.0, 1.0e100)
 Hubs.fillIndexunitIn(MCN)
 Hubs.updateCarriersNumbers(MCN)
 Model = Hubs.Matrices(MCN)
-OptimizedModel, Results = Hubs.constructModel(Model)
+OptimizedModel = Hubs.constructModel(Model, HiGHS.Optimizer)
+set_silent(OptimizedModel)
+Results = Hubs.solve(OptimizedModel)
 
 Unit_Inputs = Hubs.allunitsInlets(MCN) # retourne les n° des hubs, les noms des unités et les noms de vecteurs des entrées des unités
 Unit_Outputs = Hubs.allunitsOutlets(MCN) # retourne les n° des hubs, les noms des unités et les noms de vecteurs des sorties des unités
-Hubs_Inputs = Hubs.allHubsInlets(MCN, Model) # retourne les n° des hubs et les noms de vecteurs des entrées (payantes) des hubs
-Hubs_Exports = Hubs.allHubsExportOutlets(MCN, Model) # retourne les n° des hubs et les noms de vecteurs des sortie payantes des hubs
+Hubs_Inputs = Hubs.allHubsPurchases(MCN, Model) # retourne les n° des hubs et les noms de vecteurs des entrées (payantes) des hubs
+Hubs_Exports = Hubs.allHubsExports(MCN, Model) # retourne les n° des hubs et les noms de vecteurs des sortie payantes des hubs
 Loads = Hubs.allHubsLoads(MCN, Model) # retourne les n° des hubs et les noms de vecteurs des charges dans les hubs
 Storages = Hubs.allStorages(MCN, Model) # retourne les n° des hubs et les noms de vecteurs des stocks dans les hubs
 Network_Outputs = Hubs.allNetworkOutlets(MCN, Model) # retourne les n° des hubs et les noms de vecteurs des sorties réseau
@@ -289,10 +291,41 @@ Load_Names = Loads[2];
 
 @show termination_status(OptimizedModel)
 
+@testset "ECOS numerical regression" begin
+    @test termination_status(OptimizedModel) == JuMP.MOI.OPTIMAL
+    @test objective_value(OptimizedModel) ≈ 2.9721639445687572e10 rtol = 1.0e-9
+
+    expected = Dict(
+        :Xi => ((24, 168), 4.103541274673853e9, 4.103541274673853e9, 4.020318745660811e16, 0.0, 1.3157894736842105e7),
+        :Xo => ((27, 168), 3.3336870066022735e9, 3.3336870066022735e9, 1.64293825355407e16, 0.0, 7.467743026229233e6),
+        :Xui => ((23, 168), 4.103541274673853e9, 4.103541274673853e9, 4.020318745660811e16, 0.0, 1.3157894736842105e7),
+        :Xuo => ((23, 168), 3.333687006602276e9, 3.333687006602276e9, 2.5539652199377144e16, 0.0, 9.868421052631577e6),
+        :Xhi => ((17, 168), 4.1035412746738524e9, 4.1035412746738524e9, 4.020318745660811e16, 0.0, 1.3157894736842105e7),
+        :Xho => ((16, 168), 3.3336870066022763e9, 3.3336870066022763e9, 1.6637961012299894e16, 0.0, 7.467743026229233e6),
+        :Xp => ((5, 168), 2.998626707044714e9, 2.998626707044714e9, 3.2891202551391212e16, 0.0, 1.3157894736842105e7),
+        :Xs => ((4, 168), 1.077648686000864e9, 1.077648686000864e9, 6.959644013212426e15, 0.0, 7.309705944999548e6),
+        :Xst_charge => ((8, 168), 0.0, 0.0, 0.0, 0.0, 0.0),
+        :Xst_discharge => ((8, 168), 0.0, 0.0, 0.0, 0.0, 0.0),
+        :XEst => ((8, 168), 0.0, 0.0, 0.0, 0.0, 0.0),
+        :Xn => ((13, 168), 2.214255800936371e-8, 3.1147464815879254e9, 1.4165696880011036e16, -4.995881246711578e6, 4.995921052631578e6),
+        :Xni => ((17, 168), 1.1049145676291437e9, 1.1049145676291437e9, 7.311984905216836e15, 0.0, 7.467743026229233e6),
+    )
+
+    for (field, reference) in expected
+        values = getfield(Results, field)
+        @test size(values) == reference[1]
+        @test sum(values) ≈ reference[2] rtol = 1.0e-9 atol = 1.0e-5
+        @test sum(abs, values) ≈ reference[3] rtol = 1.0e-9 atol = 1.0e-5
+        @test sum(abs2, values) ≈ reference[4] rtol = 1.0e-9 atol = 1.0e-5
+        @test minimum(values) ≈ reference[5] rtol = 1.0e-9 atol = 1.0e-5
+        @test maximum(values) ≈ reference[6] rtol = 1.0e-9 atol = 1.0e-5
+    end
+end
+
 ni = size(Results.Xi)[1];
 no = size(Results.Xo)[1];
 
-file = matopen("matfile.mat", "w")
+file = matopen(joinpath(mktempdir(), "matfile.mat"), "w")
 
 for i in 1:ni
     write(file, "IN_" * Unit_I_Names[i] * "__" * Input_Names[i], Results.Xi[i, :])

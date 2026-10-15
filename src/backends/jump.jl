@@ -5,6 +5,7 @@ mutable struct JuMPArtifact{T,O}
     constraints::Vector{Any}
     source_revision::UInt64
     optimizer::O
+    direct::Bool
 end
 
 function _add_variable(model::JuMP.Model, variable::CompiledVariable)
@@ -27,8 +28,18 @@ function _constraint_set(sense::ConstraintSense, rhs)
     throw(ArgumentError("unsupported constraint sense $sense"))
 end
 
-function build_model(compiled::CompiledSystem{T}, optimizer) where {T}
-    model = isnothing(optimizer) ? JuMP.Model() : JuMP.Model(optimizer)
+function build_model(
+    compiled::CompiledSystem{T},
+    optimizer;
+    direct::Bool=false,
+) where {T}
+    model = if isnothing(optimizer)
+        JuMP.Model()
+    elseif direct
+        JuMP.direct_model(optimizer())
+    else
+        JuMP.Model(optimizer)
+    end
     variable_references = Dict{VariableId,JuMP.VariableRef}()
     sizehint!(variable_references, length(compiled.variables))
     for (id, variable) in compiled.variables
@@ -73,6 +84,7 @@ function build_model(compiled::CompiledSystem{T}, optimizer) where {T}
         constraints,
         compiled.source_revision,
         optimizer,
+        direct,
     )
 end
 
@@ -124,7 +136,7 @@ end
 
 function rebuildStructure(artifact::JuMPArtifact, system::HubSystem)
     compiled = Compiler.recompileStructure(artifact.compiled, system)
-    return build_model(compiled, artifact.optimizer)
+    return build_model(compiled, artifact.optimizer; direct=artifact.direct)
 end
 
 solve!(artifact::JuMPArtifact) = (JuMP.optimize!(artifact.model); artifact)

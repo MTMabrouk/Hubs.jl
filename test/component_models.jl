@@ -66,4 +66,15 @@
         D.ParameterSpec[],
         [D.LinearEquation(:bad, [D.LinearTerm(:y, 1.0)])],
     )
+
+    unit_system = D.HubSystem()
+    mass = D.addCarrier(unit_system, D.Carrier(:mass; unit=:kg))
+    unit_hub = D.addHub(unit_system, D.Hub(:unit_test))
+    mismatched = D.Process(
+        :mismatched,
+        [D.Port(:fuel, mass, D.Input; variable=:fuel)],
+        model;
+        parameters=(efficiency=0.4, variable_cost=3.0),
+    )
+    @test_throws ArgumentError D.addProcess(unit_system, unit_hub, mismatched)
 end

@@ -97,9 +97,45 @@ function addHub(system::HubSystem, hub::Hub)
     return id
 end
 
+function _validate_port_unit(system::HubSystem, model::AbstractComponentModel, port::Port)
+    model isa NoModel && return nothing
+    specification = only(specification for specification in variables(model) if
+        specification.name == port.variable)
+    carrier_unit = system.carriers[port.carrier].unit
+    variable_unit = specification.unit
+    if !isnothing(carrier_unit) && !isnothing(variable_unit) && carrier_unit != variable_unit
+        throw(ArgumentError(
+            "port $(port.name) uses unit $variable_unit but carrier " *
+            "$(system.carriers[port.carrier].name) uses unit $carrier_unit",
+        ))
+    end
+    return nothing
+end
+
+function _validate_units(system::HubSystem, component::Union{Process,Storage})
+    foreach(port -> _validate_port_unit(system, component.model, port), component.ports)
+    return nothing
+end
+
+function _validate_units(system::HubSystem, component::Network)
+    foreach(
+        located -> _validate_port_unit(system, component.model, located.port),
+        component.ports,
+    )
+    return nothing
+end
+
+function _validate_units(system::HubSystem, component::Boundary)
+    _validate_port_unit(system, component.model, component.port)
+    return nothing
+end
+
+_validate_units(::HubSystem, ::Union{Demand,RecycleLink}) = nothing
+
 function _attach!(system::HubSystem, hub_id::HubId, registry, component, field::Symbol)
     hub = system.hubs[hub_id]
     validate_component(component)
+    _validate_units(system, component)
     id = push!(registry, component)
     push!(getfield(hub, field), id)
     _changed!(system, StructuralUpdate, id; affected_hubs=[hub_id])
@@ -123,6 +159,7 @@ addRecycleLink(system::HubSystem, hub::HubId, link::RecycleLink) =
 
 function addNetwork(system::HubSystem, network::Network)
     validate_component(network)
+    _validate_units(system, network)
     for located_port in network.ports
         system.hubs[located_port.hub]
         system.carriers[located_port.port.carrier]
@@ -246,6 +283,7 @@ function setModel(
     values = isnothing(parameters) ? component.parameters : parameters
     replacement = _with_model(component, model, values)
     validate_component(replacement)
+    _validate_units(system, replacement)
     registry[id] = replacement
     _changed!(system, StructuralUpdate, id; affected_hubs=_affected_hubs(system, id))
     return system

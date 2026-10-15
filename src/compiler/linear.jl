@@ -18,6 +18,7 @@ struct CompiledVariable{T}
     domain::VariableDomain
     lower_bound::T
     upper_bound::T
+    unit::Any
 end
 
 struct ConstraintKey
@@ -111,6 +112,7 @@ function _register_variables!(context::CompilationContext{T}, system::HubSystem,
                 specification.domain,
                 T(specification.lower_bound),
                 T(specification.upper_bound),
+                specification.unit,
             )
             id = push!(context.variables, variable)
             context.variable_lookup[key] = id

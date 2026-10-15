@@ -9,8 +9,8 @@
 
     process_model = D.LinearComponentModel(
         [
-            D.VariableSpec(:fuel, D.InputFlow; lower_bound=0.0),
-            D.VariableSpec(:electricity, D.OutputFlow; lower_bound=0.0),
+            D.VariableSpec(:fuel, D.InputFlow; lower_bound=0.0, unit=:MW),
+            D.VariableSpec(:electricity, D.OutputFlow; lower_bound=0.0, unit=:MW),
         ],
         [D.ParameterSpec(:efficiency)],
         [D.LinearEquation(
@@ -71,4 +71,30 @@
 
     @test C.variable_id(compiled, process_id, :fuel, 1) isa D.VariableId
     @test C.variable_id(compiled, boundary_id, :fuel_import, 2) isa D.VariableId
+    @test compiled.variables[C.variable_id(compiled, process_id, :fuel, 1)].unit == :MW
+end
+
+@testset "Float32 compiler storage and native indices" begin
+    D = Hubs.Domain
+    C = Hubs.Compiler
+
+    system = D.HubSystem{Float32}(steps=1)
+    material = D.addCarrier(system, D.Carrier(:material; unit=:kg))
+    hub = D.addHub(system, D.Hub(:plant))
+    model = D.LinearComponentModel(
+        [D.VariableSpec(:flow, D.OutputFlow; lower_bound=0.0f0, unit=:kg)],
+        D.ParameterSpec[],
+        [D.LinearEquation(:fixed, [D.LinearTerm(:flow, 1.0f0)]; rhs=2.0f0)],
+    )
+    process = D.addProcess(system, hub, D.Process(
+        :source,
+        [D.Port(:flow, material, D.Output; variable=:flow)],
+        model,
+    ))
+
+    compiled = C.compile_linear(system)
+    block = only(block for block in compiled.blocks if block.owner == C.OwnerRef(process))
+    @test eltype(block.coefficients) === Float32
+    @test eltype(block.rhs) === Float32
+    @test C.variable_id(compiled, process, :flow, 1).slot isa Int
 end

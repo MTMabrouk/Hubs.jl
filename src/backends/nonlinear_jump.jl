@@ -6,6 +6,7 @@ mutable struct HybridJuMPArtifact{T,O}
     nonlinear_constraints::Vector{Any}
     source_revision::UInt64
     optimizer::O
+    direct::Bool
 end
 
 _linear_compiled(artifact::HybridJuMPArtifact) = artifact.compiled.linear
@@ -81,8 +82,12 @@ function _add_nonlinear_constraints!(artifact::HybridJuMPArtifact{T}) where {T}
     return artifact
 end
 
-function build_model(compiled::HybridCompiledSystem{T}, optimizer) where {T}
-    linear = build_model(compiled.linear, optimizer)
+function build_model(
+    compiled::HybridCompiledSystem{T},
+    optimizer;
+    direct::Bool=false,
+) where {T}
+    linear = build_model(compiled.linear, optimizer; direct=direct)
     artifact = HybridJuMPArtifact(
         linear.model,
         compiled,
@@ -91,6 +96,7 @@ function build_model(compiled::HybridCompiledSystem{T}, optimizer) where {T}
         Any[],
         compiled.linear.source_revision,
         optimizer,
+        direct,
     )
     return _add_nonlinear_constraints!(artifact)
 end
@@ -105,7 +111,7 @@ end
 
 function rebuildStructure(artifact::HybridJuMPArtifact, system::HubSystem)
     compiled = Compiler.recompileStructure(artifact.compiled, system)
-    return build_model(compiled, artifact.optimizer)
+    return build_model(compiled, artifact.optimizer; direct=artifact.direct)
 end
 
 solve!(artifact::HybridJuMPArtifact) = (JuMP.optimize!(artifact.model); artifact)

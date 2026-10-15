@@ -22,6 +22,7 @@ export CompiledSystem,
     evaluate_jacobian,
     evaluate_residuals,
     refreshParameters,
+    recompileStructure,
     variable_id
 
 end

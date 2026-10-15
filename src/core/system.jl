@@ -133,6 +133,14 @@ function addNetwork(system::HubSystem, network::Network)
     return id
 end
 
+function removeNetwork(system::HubSystem, id::NetworkId)
+    network = system.networks[id]
+    affected_hubs = unique(collect(located_port.hub for located_port in network.ports))
+    delete!(system.networks, id)
+    _changed!(system, StructuralUpdate, id; affected_hubs=affected_hubs)
+    return system
+end
+
 function _detach!(system::HubSystem, hub_id::HubId, registry, id, field::Symbol)
     hub = system.hubs[hub_id]
     position = findfirst(==(id), getfield(hub, field))
@@ -175,6 +183,37 @@ _with_parameters(component::Boundary, values) =
 _with_parameters(component::RecycleLink, values) =
     RecycleLink(component.name, component.source, component.target, component.model; parameters=values)
 
+_with_model(component::Process, model, values) =
+    Process(component.name, component.ports, model; parameters=values)
+_with_model(component::Storage, model, values) =
+    Storage(component.name, component.ports, model; parameters=values)
+_with_model(component::Network, model, values) =
+    Network(component.name, component.ports, model; parameters=values)
+_with_model(component::Boundary, model, values) =
+    Boundary(component.name, component.port, component.direction, model; parameters=values)
+_with_model(component::RecycleLink, model, values) =
+    RecycleLink(component.name, component.source, component.target, model; parameters=values)
+
+function _affected_hubs(system::HubSystem, id::ProcessId)
+    return HubId[hub_id for (hub_id, hub) in system.hubs if id in hub.processes]
+end
+
+function _affected_hubs(system::HubSystem, id::StorageId)
+    return HubId[hub_id for (hub_id, hub) in system.hubs if id in hub.storages]
+end
+
+function _affected_hubs(system::HubSystem, id::BoundaryId)
+    return HubId[hub_id for (hub_id, hub) in system.hubs if id in hub.boundaries]
+end
+
+function _affected_hubs(system::HubSystem, id::RecycleLinkId)
+    return HubId[hub_id for (hub_id, hub) in system.hubs if id in hub.recycle_links]
+end
+
+function _affected_hubs(system::HubSystem, id::NetworkId)
+    return unique(collect(located_port.hub for located_port in system.networks[id].ports))
+end
+
 _merge_parameters(values::NamedTuple, updates::NamedTuple) = merge(values, updates)
 _merge_parameters(values::AbstractDict, updates::NamedTuple) = merge(copy(values), Dict(pairs(updates)))
 
@@ -195,6 +234,22 @@ end
 
 setParameters(system::HubSystem, id::EntityId; values...) =
     setParameters(system, id, (; values...))
+
+function setModel(
+    system::HubSystem,
+    id::EntityId,
+    model::AbstractComponentModel;
+    parameters=nothing,
+)
+    registry = _registry(system, id)
+    component = registry[id]
+    values = isnothing(parameters) ? component.parameters : parameters
+    replacement = _with_model(component, model, values)
+    validate_component(replacement)
+    registry[id] = replacement
+    _changed!(system, StructuralUpdate, id; affected_hubs=_affected_hubs(system, id))
+    return system
+end
 
 Base.show(io::IO, system::HubSystem) = print(
     io,

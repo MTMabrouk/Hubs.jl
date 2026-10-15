@@ -1,9 +1,10 @@
-mutable struct JuMPArtifact{T}
+mutable struct JuMPArtifact{T,O}
     model::JuMP.Model
     compiled::CompiledSystem{T}
     variables::Dict{VariableId,JuMP.VariableRef}
     constraints::Vector{Any}
     source_revision::UInt64
+    optimizer::O
 end
 
 function _add_variable(model::JuMP.Model, variable::CompiledVariable)
@@ -65,12 +66,13 @@ function build_model(compiled::CompiledSystem{T}, optimizer) where {T}
     end
     JuMP.set_objective_sense(model, JuMP.MOI.MIN_SENSE)
     JuMP.set_objective_function(model, objective)
-    return JuMPArtifact{T}(
+    return JuMPArtifact(
         model,
         compiled,
         variable_references,
         constraints,
         compiled.source_revision,
+        optimizer,
     )
 end
 
@@ -114,6 +116,11 @@ function refreshParameters(artifact::JuMPArtifact, system::HubSystem)
     _sync_linear_objective!(artifact)
     artifact.source_revision = artifact.compiled.source_revision
     return artifact
+end
+
+function rebuildStructure(artifact::JuMPArtifact, system::HubSystem)
+    compiled = Compiler.recompileStructure(artifact.compiled, system)
+    return build_model(compiled, artifact.optimizer)
 end
 
 solve!(artifact::JuMPArtifact) = (JuMP.optimize!(artifact.model); artifact)

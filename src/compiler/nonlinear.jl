@@ -273,10 +273,13 @@ function _compile_symbolic_component!(
     return nothing
 end
 
-function compile_hybrid(system::HubSystem{T}) where {T}
+function compile_hybrid(
+    system::HubSystem{T};
+    template_cache::Union{Nothing,Dict{UInt64,NonlinearTemplate}}=nothing,
+) where {T}
     base = compile_linear(system)
     linear_blocks = copy(base.blocks)
-    templates = Dict{UInt64,NonlinearTemplate}()
+    templates = isnothing(template_cache) ? Dict{UInt64,NonlinearTemplate}() : template_cache
     instances = NonlinearInstance{T}[]
     for registry in (system.processes, system.storages, system.networks, system.boundaries)
         for (owner, component) in registry
@@ -295,6 +298,12 @@ function compile_hybrid(system::HubSystem{T}) where {T}
         base.source_revision,
     )
     return HybridCompiledSystem{T}(linear, templates, instances)
+end
+
+recompileStructure(::CompiledSystem, system::HubSystem) = compile_linear(system)
+
+function recompileStructure(compiled::HybridCompiledSystem, system::HubSystem)
+    return compile_hybrid(system; template_cache=compiled.nonlinear_templates)
 end
 
 function refreshParameters(compiled::HybridCompiledSystem{T}, system::HubSystem) where {T}

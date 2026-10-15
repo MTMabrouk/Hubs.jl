@@ -1,10 +1,13 @@
 module Compiler
 
 using ..Domain
+using ..ModelLanguage
+using HubsParser
 using SparseArrays
 using Symbolics
 
 include("linear.jl")
+include("language.jl")
 include("nonlinear.jl")
 
 export CompiledSystem,

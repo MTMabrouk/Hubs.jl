@@ -89,6 +89,7 @@ prepared; use a new model definition for structural changes.
 mutable struct ComponentLibrary
     linear_templates::Dict{Any,Any}
     linear_model_variants::IdDict{Any,Dict{Tuple{DataType,Int},Any}}
+    language_model_variants::IdDict{Any,Dict{Tuple{DataType,Int},Any}}
     hits::Int
     misses::Int
 end
@@ -96,13 +97,14 @@ end
 ComponentLibrary() = ComponentLibrary(
     Dict{Any,Any}(),
     IdDict{Any,Dict{Tuple{DataType,Int},Any}}(),
+    IdDict{Any,Dict{Tuple{DataType,Int},Any}}(),
     0,
     0,
 )
 
 """Return the number of cached templates, cache hits, and cache misses."""
 templateStatistics(library::ComponentLibrary) = (
-    templates=length(library.linear_templates),
+    templates=length(library.linear_templates) + sum(length, values(library.language_model_variants); init=0),
     hits=library.hits,
     misses=library.misses,
 )
@@ -611,6 +613,9 @@ function _compile_registry!(
                 numeric_type=T,
             )
             _instantiate_template!(context, id, template, component.parameters)
+        elseif component.model isa LanguageComponentModel
+            _register_variables!(context, system, id, component.model)
+            _compile_language_component!(context, system, id, component, library)
         elseif component.model isa SymbolicComponentModel
             _register_variables!(context, system, id, component.model)
         else

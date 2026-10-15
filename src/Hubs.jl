@@ -1,6 +1,7 @@
 module Hubs
 
 include("core/CoreDomain.jl")
+include("language/ModelLanguage.jl")
 include("compiler/Compiler.jl")
 include("backends/Backends.jl")
 

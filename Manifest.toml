@@ -2,7 +2,7 @@
 
 julia_version = "1.10.7"
 manifest_format = "2.0"
-project_hash = "f2d8077d4890aa591e216d896921910ccf6ccb26"
+project_hash = "a4aead5a94456845f798fb5b1c3805be1e88ce82"
 
 [[deps.ADTypes]]
 deps = ["PrecompileTools"]
@@ -294,6 +294,11 @@ deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "7ceb74761498971196de2ba4000d5143384564ac"
 uuid = "c018c7e6-a5b0-4aea-8f80-9c1ef9991411"
 version = "12.0.3"
+
+[[deps.HubsParser]]
+path = "lib/HubsParser"
+uuid = "c414a167-93c8-4595-bf09-2ae5ba0ab7fb"
+version = "0.1.0"
 
 [[deps.Inflate]]
 git-tree-sha1 = "d1b1b796e47d94588b3757fe84fbf65a5ec4a80d"

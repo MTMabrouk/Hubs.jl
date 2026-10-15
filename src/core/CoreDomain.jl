@@ -1,8 +1,11 @@
 module Domain
 
+using Symbolics
+
 include("ids.jl")
 include("entities.jl")
 include("../models/specifications.jl")
+include("../models/symbolic.jl")
 include("system.jl")
 
 export AbstractComponentModel,
@@ -61,6 +64,7 @@ export AbstractComponentModel,
     State,
     Storage,
     StorageId,
+    SymbolicComponentModel,
     VariableDomain,
     VariableId,
     VariableRole,
@@ -79,6 +83,7 @@ export AbstractComponentModel,
     objective_terms,
     parameter_value,
     parameters,
+    residuals,
     removeBoundary,
     removeDemand,
     removeProcess,
@@ -86,6 +91,8 @@ export AbstractComponentModel,
     removeStorage,
     validate,
     validate_component,
-    variables
+    variables,
+    symbolic_parameters,
+    symbolic_variables
 
 end

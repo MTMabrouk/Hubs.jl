@@ -297,13 +297,15 @@ end
 function _compile_registry!(context::CompilationContext{T}, system::HubSystem, registry) where {T}
     for (id, component) in registry
         component.model isa NoModel && continue
-        component.model isa LinearComponentModel ||
-            throw(ArgumentError("unsupported component model $(typeof(component.model))"))
         _register_variables!(context, system, id, component.model)
     end
     for (id, component) in registry
         component.model isa NoModel && continue
-        _compile_component_block(context, system, id, component.model, component.parameters)
+        if component.model isa LinearComponentModel
+            _compile_component_block(context, system, id, component.model, component.parameters)
+        elseif !(component.model isa SymbolicComponentModel)
+            throw(ArgumentError("unsupported component model $(typeof(component.model))"))
+        end
     end
     return context
 end

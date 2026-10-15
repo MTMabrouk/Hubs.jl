@@ -7,7 +7,7 @@ using JuMP
 include("harness.jl")
 using .HubsBenchmarkHarness
 
-function benchmark_system(; hubs=8, steps=48)
+function benchmark_system_legacy(; hubs=8, steps=48)
     system = Hubs.MultiCarrierNetwork()
     system.Nsteps = steps
     Hubs.addEnergyHubs(system, hubs)
@@ -29,16 +29,84 @@ function benchmark_system(; hubs=8, steps=48)
         Hubs.addPorts(system, hub, "gas", :purchasePorts, 0.0, 200.0, 2.0)
         demand = [20.0 + 5.0 * sin(2pi * (time - 1) / 24) for time in 1:steps]
         Hubs.addLoads(system, hub, "electricity", demand)
-        Hubs.addStorages(system, hub, "electricity", 20.0, 80.0; efficiency=0.95)
-    end
-
-    # Exercise network balance generation as well as local hub balances.
-    for hub in 1:min(hubs, 4)
-        Hubs.addPorts(system, hub, "electricity", :networkPorts, 0.0, 50.0)
     end
 
     Hubs.fillIndexunitIn(system)
     Hubs.updateCarriersNumbers(system)
+    return system
+end
+
+function benchmark_system_candidate(; hubs=8, steps=48)
+    D = Hubs.Domain
+    system = D.HubSystem(steps=steps)
+    gas = D.addCarrier(system, D.Carrier(:gas))
+    electricity = D.addCarrier(system, D.Carrier(:electricity))
+
+    process_model = D.LinearComponentModel(
+        [
+            D.VariableSpec(:gas, D.InputFlow; lower_bound=0.0),
+            D.VariableSpec(:electricity, D.OutputFlow; lower_bound=0.0),
+            D.VariableSpec(:input_capacity, D.Capacity; lower_bound=0.0, axes=()),
+            D.VariableSpec(:output_capacity, D.Capacity; lower_bound=0.0, axes=()),
+        ],
+        [D.ParameterSpec(:efficiency), D.ParameterSpec(:capacity_cost)],
+        [
+            D.LinearEquation(:conversion, [
+                D.LinearTerm(:electricity, 1.0),
+                D.LinearTerm(:gas, D.ParameterCoefficient(:efficiency, -1.0)),
+            ]),
+            D.LinearEquation(
+                :input_capacity,
+                [D.LinearTerm(:gas, 1.0), D.LinearTerm(:input_capacity, -1.0)];
+                sense=D.LessThan,
+            ),
+            D.LinearEquation(
+                :output_capacity,
+                [D.LinearTerm(:electricity, 1.0), D.LinearTerm(:output_capacity, -1.0)];
+                sense=D.LessThan,
+            ),
+        ],
+        [
+            D.LinearObjectiveTerm(:input_capacity, D.ParameterCoefficient(:capacity_cost)),
+            D.LinearObjectiveTerm(:output_capacity, D.ParameterCoefficient(:capacity_cost)),
+        ],
+    )
+    boundary_model = D.LinearComponentModel(
+        [D.VariableSpec(:gas_import, D.InputFlow; lower_bound=0.0, upper_bound=200.0)],
+        [D.ParameterSpec(:price)],
+        D.LinearEquation[],
+        [D.LinearObjectiveTerm(:gas_import, D.ParameterCoefficient(:price))],
+    )
+
+    for index in 1:hubs
+        hub = D.addHub(system, D.Hub(Symbol(:hub_, index)))
+        D.addProcess(
+            system,
+            hub,
+            D.Process(
+                :gas_to_electricity,
+                [
+                    D.Port(:gas_in, gas, D.Input; variable=:gas),
+                    D.Port(:electricity_out, electricity, D.Output; variable=:electricity),
+                ],
+                process_model;
+                parameters=(efficiency=0.5, capacity_cost=0.1),
+            ),
+        )
+        D.addBoundary(
+            system,
+            hub,
+            D.Boundary(
+                :gas_supply,
+                D.Port(:gas_import, gas, D.Output; variable=:gas_import),
+                D.Import,
+                boundary_model;
+                parameters=(price=2.0,),
+            ),
+        )
+        demand = [20.0 + 5.0 * sin(2pi * (time - 1) / 24) for time in 1:steps]
+        D.addDemand(system, hub, D.Demand(:electricity_demand, D.Port(:load, electricity, D.Input), demand))
+    end
     return system
 end
 
@@ -52,15 +120,36 @@ end
 solve_legacy!(artifact) = optimize!(artifact.model)
 legacy_objective(artifact) = objective_value(artifact.model)
 
+function compile_candidate(system)
+    compiled = Hubs.Compiler.compile_linear(system)
+    artifact = Hubs.Backends.build_model(compiled, HiGHS.Optimizer)
+    set_silent(artifact.model)
+    return artifact
+end
+
+solve_candidate!(artifact) = Hubs.Backends.solve!(artifact)
+candidate_objective(artifact) = Hubs.Backends.objective_value(artifact)
+
 samples = parse(Int, get(ENV, "HUBS_BENCHMARK_SAMPLES", "3"))
-system = benchmark_system()
+legacy_system = benchmark_system_legacy()
+candidate_system = benchmark_system_candidate()
 legacy = benchmark_pipeline(
     "legacy",
-    system,
+    legacy_system,
     compile_legacy,
     solve_legacy!,
     legacy_objective;
     samples,
 )
+candidate = benchmark_pipeline(
+    "candidate",
+    candidate_system,
+    compile_candidate,
+    solve_candidate!,
+    candidate_objective;
+    samples,
+)
 
-print_comparison(legacy)
+isapprox(candidate.objective, legacy.objective; rtol=1.0e-9, atol=1.0e-7) ||
+    error("candidate objective $(candidate.objective) differs from legacy objective $(legacy.objective)")
+print_comparison(legacy, candidate)

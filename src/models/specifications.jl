@@ -213,3 +213,6 @@ function validate_component(component::Boundary)
     validate_component(component.model, (component.port,), component.parameters)
     return component
 end
+
+validate_component(::Demand) = nothing
+validate_component(::RecycleLink) = nothing

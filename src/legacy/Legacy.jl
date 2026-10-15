@@ -1219,7 +1219,7 @@ function constructModel(matrices::Matrices, optimizer=Gurobi.Optimizer)
 
     # Maximum storage power capacity
     Xstoragemax = @variable(model, Xstoragemax[i=1:NStorage], lower_bound = 0.0)
-    for index in NStorage
+    for index in 1:NStorage
         set_upper_bound(Xstoragemax[index], matrices.storagePmax[index])
     end
     # Total power inlets and outlets of each unit

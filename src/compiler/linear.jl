@@ -43,11 +43,27 @@ struct LinearObjective{T}
     coefficients::Vector{T}
 end
 
-struct CompiledSystem{T}
+abstract type AbstractParameterUpdate end
+
+struct LinearCoefficientUpdate{T} <: AbstractParameterUpdate
+    parameter::Symbol
+    block_index::Int
+    position::Int
+    multiplier::T
+end
+
+struct ObjectiveCoefficientUpdate{T} <: AbstractParameterUpdate
+    parameter::Symbol
+    position::Int
+    multiplier::T
+end
+
+mutable struct CompiledSystem{T}
     variables::Registry{:variable}
     variable_lookup::Dict{VariableKey,VariableId}
     blocks::Vector{LinearBlock{T}}
     objective::LinearObjective{T}
+    parameter_updates::Dict{OwnerRef,Vector{AbstractParameterUpdate}}
     source_revision::UInt64
 end
 
@@ -57,6 +73,7 @@ mutable struct CompilationContext{T}
     blocks::Vector{LinearBlock{T}}
     objective_variable_ids::Vector{VariableId}
     objective_coefficients::Vector{T}
+    parameter_updates::Dict{OwnerRef,Vector{AbstractParameterUpdate}}
 end
 
 CompilationContext{T}() where {T} = CompilationContext{T}(
@@ -65,7 +82,13 @@ CompilationContext{T}() where {T} = CompilationContext{T}(
     LinearBlock{T}[],
     VariableId[],
     T[],
+    Dict{OwnerRef,Vector{AbstractParameterUpdate}}(),
 )
+
+function _record_parameter_update!(context::CompilationContext, owner, update::AbstractParameterUpdate)
+    push!(get!(Vector{AbstractParameterUpdate}, context.parameter_updates, OwnerRef(owner)), update)
+    return context
+end
 
 _axis_length(specification::VariableSpec, system::HubSystem) = if isempty(specification.axes)
     1
@@ -124,6 +147,7 @@ function _compile_component_block(
     model::LinearComponentModel,
     parameter_values,
 ) where {T}
+    block_index = length(context.blocks) + 1
     total_rows = sum(
         (_equation_instances(equation, model, system) for equation in equations(model));
         init=0,
@@ -160,6 +184,14 @@ function _compile_component_block(
                 key = VariableKey(OwnerRef(owner), term.variable, variable_index)
                 variable_ids[term_position] = context.variable_lookup[key]
                 coefficients[term_position] = T(coefficient_value(term.coefficient, parameter_map))
+                if term.coefficient isa ParameterCoefficient
+                    _record_parameter_update!(context, owner, LinearCoefficientUpdate{T}(
+                        term.coefficient.parameter,
+                        block_index,
+                        term_position,
+                        T(term.coefficient.multiplier),
+                    ))
+                end
             end
             rowptr[row + 1] = term_position + 1
         end
@@ -181,6 +213,13 @@ function _compile_component_block(
             index = _variable_index(specification, position)
             push!(context.objective_variable_ids, context.variable_lookup[VariableKey(OwnerRef(owner), term.variable, index)])
             push!(context.objective_coefficients, T(coefficient_value(term.coefficient, parameter_map)))
+            if term.coefficient isa ParameterCoefficient
+                _record_parameter_update!(context, owner, ObjectiveCoefficientUpdate{T}(
+                    term.coefficient.parameter,
+                    length(context.objective_coefficients),
+                    T(term.coefficient.multiplier),
+                ))
+            end
         end
     end
     return context
@@ -326,6 +365,68 @@ function compile_linear(system::HubSystem{T}) where {T}
         context.variable_lookup,
         context.blocks,
         LinearObjective{T}(context.objective_variable_ids, context.objective_coefficients),
+        context.parameter_updates,
         system.revision,
     )
+end
+
+function _component(system::HubSystem, owner::OwnerRef)
+    id = EntityId{owner.kind}(owner.slot, owner.generation)
+    registry = if owner.kind == :process
+        system.processes
+    elseif owner.kind == :storage
+        system.storages
+    elseif owner.kind == :network
+        system.networks
+    elseif owner.kind == :boundary
+        system.boundaries
+    elseif owner.kind == :recycle_link
+        system.recycle_links
+    else
+        throw(ArgumentError("entity $(owner.kind) does not carry parameters"))
+    end
+    return registry[id]
+end
+
+function _apply_parameter_update!(compiled::CompiledSystem, update::LinearCoefficientUpdate, values)
+    compiled.blocks[update.block_index].coefficients[update.position] =
+        update.multiplier * values[update.parameter]
+    return nothing
+end
+
+function _apply_parameter_update!(compiled::CompiledSystem, update::ObjectiveCoefficientUpdate, values)
+    compiled.objective.coefficients[update.position] = update.multiplier * values[update.parameter]
+    return nothing
+end
+
+function _changed_parameter_owners(compiled::CompiledSystem, system::HubSystem)
+    changes = changesSince(system, compiled.source_revision)
+    isstructural(changes) && throw(ArgumentError(
+        "structural changes exist after revision $(compiled.source_revision); use recompileStructure",
+    ))
+    owners = OwnerRef[]
+    for change in changes.changes
+        change.kind == ParameterUpdate || continue
+        owner = OwnerRef(change.entity_kind, change.slot, change.generation)
+        owner in owners || push!(owners, owner)
+    end
+    return changes, owners
+end
+
+function _refresh_owner_parameters!(compiled::CompiledSystem, system::HubSystem, owner::OwnerRef)
+    component = _component(system, owner)
+    values = _resolved_parameters(component.model, component.parameters)
+    for update in get(compiled.parameter_updates, owner, AbstractParameterUpdate[])
+        _apply_parameter_update!(compiled, update, values)
+    end
+    return compiled
+end
+
+function refreshParameters(compiled::CompiledSystem, system::HubSystem)
+    changes, owners = _changed_parameter_owners(compiled, system)
+    for owner in owners
+        _refresh_owner_parameters!(compiled, system, owner)
+    end
+    compiled.source_revision = changes.to_revision
+    return compiled
 end

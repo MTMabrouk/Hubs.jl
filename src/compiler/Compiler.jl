@@ -21,6 +21,7 @@ export CompiledSystem,
     compile_linear,
     evaluate_jacobian,
     evaluate_residuals,
+    refreshParameters,
     variable_id
 
 end

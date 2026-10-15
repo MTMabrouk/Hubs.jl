@@ -1,3 +1,24 @@
+@enum ChangeKind begin
+    ParameterUpdate
+    StructuralUpdate
+end
+
+struct ModelChange
+    revision::UInt64
+    kind::ChangeKind
+    entity_kind::Symbol
+    slot::Int
+    generation::UInt32
+    fields::Vector{Symbol}
+    affected_hubs::Vector{HubId}
+end
+
+struct ChangeSet
+    from_revision::UInt64
+    to_revision::UInt64
+    changes::Vector{ModelChange}
+end
+
 mutable struct HubSystem{T<:Real}
     steps::Int
     time_step::T
@@ -10,6 +31,7 @@ mutable struct HubSystem{T<:Real}
     demands::Registry{:demand}
     recycle_links::Registry{:recycle_link}
     revision::UInt64
+    changes::Vector{ModelChange}
 end
 
 function HubSystem{T}(; steps::Integer=1, time_step::Real=1) where {T<:Real}
@@ -26,24 +48,52 @@ function HubSystem{T}(; steps::Integer=1, time_step::Real=1) where {T<:Real}
         Registry{:demand}(),
         Registry{:recycle_link}(),
         UInt64(0),
+        ModelChange[],
     )
 end
 
 HubSystem(; kwargs...) = HubSystem{Float64}(; kwargs...)
 
-_changed!(system::HubSystem) = (system.revision += UInt64(1); system)
+function _changed!(
+    system::HubSystem,
+    kind::ChangeKind,
+    id::EntityId{K};
+    fields=Symbol[],
+    affected_hubs=HubId[],
+) where {K}
+    system.revision += UInt64(1)
+    push!(system.changes, ModelChange(
+        system.revision,
+        kind,
+        K,
+        id.slot,
+        id.generation,
+        collect(Symbol, fields),
+        collect(HubId, affected_hubs),
+    ))
+    return system
+end
+
+function changesSince(system::HubSystem, revision::Integer)
+    revision >= 0 || throw(ArgumentError("revision cannot be negative"))
+    revision <= system.revision || throw(ArgumentError("revision $revision is newer than the system"))
+    changes = ModelChange[change for change in system.changes if change.revision > revision]
+    return ChangeSet(UInt64(revision), system.revision, changes)
+end
+
+isstructural(changes::ChangeSet) = any(change.kind == StructuralUpdate for change in changes.changes)
 
 function addCarrier(system::HubSystem, carrier::Carrier)
     any(existing.name == carrier.name for (_, existing) in system.carriers) &&
         throw(ArgumentError("carrier $(carrier.name) already exists"))
     id = push!(system.carriers, carrier)
-    _changed!(system)
+    _changed!(system, StructuralUpdate, id)
     return id
 end
 
 function addHub(system::HubSystem, hub::Hub)
     id = push!(system.hubs, hub)
-    _changed!(system)
+    _changed!(system, StructuralUpdate, id; affected_hubs=[id])
     return id
 end
 
@@ -52,7 +102,7 @@ function _attach!(system::HubSystem, hub_id::HubId, registry, component, field::
     validate_component(component)
     id = push!(registry, component)
     push!(getfield(hub, field), id)
-    _changed!(system)
+    _changed!(system, StructuralUpdate, id; affected_hubs=[hub_id])
     return id
 end
 
@@ -78,7 +128,8 @@ function addNetwork(system::HubSystem, network::Network)
         system.carriers[located_port.port.carrier]
     end
     id = push!(system.networks, network)
-    _changed!(system)
+    affected_hubs = unique(collect(located_port.hub for located_port in network.ports))
+    _changed!(system, StructuralUpdate, id; affected_hubs=affected_hubs)
     return id
 end
 
@@ -88,7 +139,7 @@ function _detach!(system::HubSystem, hub_id::HubId, registry, id, field::Symbol)
     isnothing(position) && throw(ArgumentError("entity $id is not attached to hub $hub_id"))
     deleteat!(getfield(hub, field), position)
     delete!(registry, id)
-    _changed!(system)
+    _changed!(system, StructuralUpdate, id; affected_hubs=[hub_id])
     return system
 end
 
@@ -106,6 +157,44 @@ removeDemand(system::HubSystem, hub::HubId, id::DemandId) =
 
 removeRecycleLink(system::HubSystem, hub::HubId, id::RecycleLinkId) =
     _detach!(system, hub, system.recycle_links, id, :recycle_links)
+
+_registry(system::HubSystem, ::EntityId{:process}) = system.processes
+_registry(system::HubSystem, ::EntityId{:storage}) = system.storages
+_registry(system::HubSystem, ::EntityId{:network}) = system.networks
+_registry(system::HubSystem, ::EntityId{:boundary}) = system.boundaries
+_registry(system::HubSystem, ::EntityId{:recycle_link}) = system.recycle_links
+
+_with_parameters(component::Process, values) =
+    Process(component.name, component.ports, component.model; parameters=values)
+_with_parameters(component::Storage, values) =
+    Storage(component.name, component.ports, component.model; parameters=values)
+_with_parameters(component::Network, values) =
+    Network(component.name, component.ports, component.model; parameters=values)
+_with_parameters(component::Boundary, values) =
+    Boundary(component.name, component.port, component.direction, component.model; parameters=values)
+_with_parameters(component::RecycleLink, values) =
+    RecycleLink(component.name, component.source, component.target, component.model; parameters=values)
+
+_merge_parameters(values::NamedTuple, updates::NamedTuple) = merge(values, updates)
+_merge_parameters(values::AbstractDict, updates::NamedTuple) = merge(copy(values), Dict(pairs(updates)))
+
+function setParameters(system::HubSystem, id::EntityId, updates::NamedTuple)
+    isempty(updates) && return system
+    registry = _registry(system, id)
+    component = registry[id]
+    declared = Set(specification.name for specification in parameters(component.model))
+    unknown = setdiff(Set(keys(updates)), declared)
+    isempty(unknown) || throw(ArgumentError("unknown parameters for $(component.name): $unknown"))
+    values = _merge_parameters(component.parameters, updates)
+    replacement = _with_parameters(component, values)
+    validate_component(replacement)
+    registry[id] = replacement
+    _changed!(system, ParameterUpdate, id; fields=collect(keys(updates)))
+    return system
+end
+
+setParameters(system::HubSystem, id::EntityId; values...) =
+    setParameters(system, id, (; values...))
 
 Base.show(io::IO, system::HubSystem) = print(
     io,

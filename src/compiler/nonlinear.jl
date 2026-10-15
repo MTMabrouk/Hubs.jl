@@ -16,6 +16,13 @@ struct NonlinearInstance{T}
     parameters::Vector{T}
 end
 
+struct SymbolicAffineUpdate{F} <: AbstractParameterUpdate
+    parameter_names::Vector{Symbol}
+    block_index::Int
+    coefficient_count::Int
+    value_function::F
+end
+
 struct HybridCompiledSystem{T}
     linear::CompiledSystem{T}
     nonlinear_templates::Dict{UInt64,NonlinearTemplate}
@@ -98,32 +105,41 @@ function _compile_affine_symbolic_block(
     model::SymbolicComponentModel,
     parameter_values,
     affine_residuals,
+    block_index::Int,
 ) where {T}
-    isempty(affine_residuals) && return nothing
+    isempty(affine_residuals) && return (nothing, nothing)
     variable_specs = variables(model)
     symbolic_x = symbolic_variables(model)
     replacements = _symbolic_parameter_map(model, parameter_values)
-    zero_replacements = copy(replacements)
+    zero_replacements = Dict{Any,Any}()
     for symbol in symbolic_x
         zero_replacements[symbol] = zero(T)
     end
 
     coefficients_by_residual = Vector{Vector{T}}(undef, length(affine_residuals))
+    coefficient_expressions_by_residual = Vector{Vector{Any}}(undef, length(affine_residuals))
     constants = Vector{T}(undef, length(affine_residuals))
+    constant_expressions = Vector{Any}(undef, length(affine_residuals))
     instances = Vector{Int}(undef, length(affine_residuals))
     total_rows = 0
     total_terms = 0
     for (residual_index, residual) in enumerate(affine_residuals)
         coefficients = Vector{T}(undef, length(symbolic_x))
+        coefficient_expressions = Vector{Any}(undef, length(symbolic_x))
         nonzeros = 0
         for variable_index in eachindex(symbolic_x)
             derivative = Symbolics.expand_derivatives(Symbolics.derivative(residual, symbolic_x[variable_index]))
-            coefficient = T(_symbolic_number(derivative, replacements))
+            coefficient_expressions[variable_index] = derivative
+            structurally_zero = iszero(Symbolics.simplify(derivative))
+            coefficient = structurally_zero ? zero(T) : T(_symbolic_number(derivative, replacements))
             coefficients[variable_index] = coefficient
-            nonzeros += !iszero(coefficient)
+            nonzeros += !structurally_zero
         end
         coefficients_by_residual[residual_index] = coefficients
-        constants[residual_index] = T(_symbolic_number(residual, zero_replacements))
+        coefficient_expressions_by_residual[residual_index] = coefficient_expressions
+        constant_expression = Symbolics.substitute(residual, zero_replacements)
+        constant_expressions[residual_index] = constant_expression
+        constants[residual_index] = T(_symbolic_number(constant_expression, replacements))
         instances[residual_index] = _residual_instances(model, residual, system)
         total_rows += instances[residual_index]
         total_terms += nonzeros * instances[residual_index]
@@ -135,6 +151,8 @@ function _compile_affine_symbolic_block(
     rhs = Vector{T}(undef, total_rows)
     senses = fill(EqualTo, total_rows)
     rows = Vector{ConstraintKey}(undef, total_rows)
+    coefficient_expressions = Vector{Any}(undef, total_terms)
+    rhs_expressions = Vector{Any}(undef, total_rows)
     rowptr[1] = 1
     row = 0
     position = 0
@@ -143,9 +161,11 @@ function _compile_affine_symbolic_block(
             row += 1
             rows[row] = ConstraintKey(OwnerRef(owner), Symbol("symbolic_affine_", residual_index), instances[residual_index] == 1 ? 0 : instance)
             rhs[row] = -constants[residual_index]
+            rhs_expressions[row] = -constant_expressions[residual_index]
             for variable_index in eachindex(variable_specs)
                 coefficient = coefficients_by_residual[residual_index][variable_index]
-                iszero(coefficient) && continue
+                derivative = coefficient_expressions_by_residual[residual_index][variable_index]
+                iszero(Symbolics.simplify(derivative)) && continue
                 position += 1
                 specification = variable_specs[variable_index]
                 local_index = isempty(specification.axes) ? 0 : instance
@@ -153,13 +173,37 @@ function _compile_affine_symbolic_block(
                     VariableKey(OwnerRef(owner), specification.name, local_index)
                 ]
                 coefficient_values[position] = coefficient
+                coefficient_expressions[position] = derivative
             end
             rowptr[row + 1] = position + 1
         end
     end
-    return LinearBlock{T}(
+    block = LinearBlock{T}(
         OwnerRef(owner), rowptr, variable_ids, coefficient_values, rhs, senses, rows,
     )
+    value_functions = Symbolics.build_function(
+        vcat(coefficient_expressions, rhs_expressions),
+        symbolic_parameters(model);
+        expression=Val(false),
+    )
+    value_function = value_functions isa Tuple ? first(value_functions) : value_functions
+    update = SymbolicAffineUpdate(
+        map(specification -> specification.name, parameters(model)),
+        block_index,
+        length(coefficient_values),
+        value_function,
+    )
+    return block, update
+end
+
+function _apply_parameter_update!(compiled::CompiledSystem, update::SymbolicAffineUpdate, values)
+    parameter_values = [values[name] for name in update.parameter_names]
+    result = update.value_function(parameter_values)
+    result = result isa Tuple ? first(result) : result
+    block = compiled.blocks[update.block_index]
+    copyto!(block.coefficients, 1, result, 1, update.coefficient_count)
+    copyto!(block.rhs, 1, result, update.coefficient_count + 1, length(block.rhs))
+    return nothing
 end
 
 function _symbolic_instance_count(model::SymbolicComponentModel, residuals_to_compile, system::HubSystem)
@@ -184,10 +228,19 @@ function _compile_symbolic_component!(
         push!(_is_affine(model, residual) ? affine_residuals : nonlinear_residuals, residual)
     end
 
-    affine_block = _compile_affine_symbolic_block(
-        compiled, system, owner, model, component.parameters, affine_residuals,
+    affine_block, affine_update = _compile_affine_symbolic_block(
+        compiled,
+        system,
+        owner,
+        model,
+        component.parameters,
+        affine_residuals,
+        length(linear_blocks) + 1,
     )
-    isnothing(affine_block) || push!(linear_blocks, affine_block)
+    if !isnothing(affine_block)
+        push!(linear_blocks, affine_block)
+        push!(get!(Vector{AbstractParameterUpdate}, compiled.parameter_updates, OwnerRef(owner)), affine_update)
+    end
     isempty(nonlinear_residuals) && return nothing
 
     template_key = _template_key(model, nonlinear_residuals)
@@ -238,7 +291,23 @@ function compile_hybrid(system::HubSystem{T}) where {T}
         base.variable_lookup,
         linear_blocks,
         base.objective,
+        base.parameter_updates,
         base.source_revision,
     )
     return HybridCompiledSystem{T}(linear, templates, instances)
+end
+
+function refreshParameters(compiled::HybridCompiledSystem{T}, system::HubSystem) where {T}
+    _, owners = _changed_parameter_owners(compiled.linear, system)
+    refreshParameters(compiled.linear, system)
+    changed = Set(owners)
+    for instance in compiled.nonlinear_instances
+        instance.owner in changed || continue
+        component = _component(system, instance.owner)
+        values = _resolved_parameters(component.model, component.parameters)
+        for (position, specification) in enumerate(parameters(component.model))
+            instance.parameters[position] = T(values[specification.name])
+        end
+    end
+    return compiled
 end

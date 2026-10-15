@@ -276,8 +276,9 @@ end
 function compile_hybrid(
     system::HubSystem{T};
     template_cache::Union{Nothing,Dict{UInt64,NonlinearTemplate}}=nothing,
+    component_library::ComponentLibrary=ComponentLibrary(),
 ) where {T}
-    base = compile_linear(system)
+    base = compile_linear(system; library=component_library)
     linear_blocks = copy(base.blocks)
     templates = isnothing(template_cache) ? Dict{UInt64,NonlinearTemplate}() : template_cache
     instances = NonlinearInstance{T}[]
@@ -296,14 +297,20 @@ function compile_hybrid(
         base.objective,
         base.parameter_updates,
         base.source_revision,
+        base.component_library,
     )
     return HybridCompiledSystem{T}(linear, templates, instances)
 end
 
-recompileStructure(::CompiledSystem, system::HubSystem) = compile_linear(system)
+recompileStructure(compiled::CompiledSystem, system::HubSystem) =
+    compile_linear(system; library=compiled.component_library)
 
 function recompileStructure(compiled::HybridCompiledSystem, system::HubSystem)
-    return compile_hybrid(system; template_cache=compiled.nonlinear_templates)
+    return compile_hybrid(
+        system;
+        template_cache=compiled.nonlinear_templates,
+        component_library=compiled.linear.component_library,
+    )
 end
 
 function refreshParameters(compiled::HybridCompiledSystem{T}, system::HubSystem) where {T}

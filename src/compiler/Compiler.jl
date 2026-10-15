@@ -8,7 +8,9 @@ include("linear.jl")
 include("nonlinear.jl")
 
 export CompiledSystem,
+    CompiledLinearTemplate,
     CompiledVariable,
+    ComponentLibrary,
     ConstraintKey,
     HybridCompiledSystem,
     LinearBlock,
@@ -21,8 +23,10 @@ export CompiledSystem,
     compile_linear,
     evaluate_jacobian,
     evaluate_residuals,
+    prepareModel,
     refreshParameters,
     recompileStructure,
+    templateStatistics,
     variable_id
 
 end

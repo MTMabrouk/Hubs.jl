@@ -1,12 +1,13 @@
 mutable struct HybridJuMPArtifact{T,O}
     model::JuMP.Model
     compiled::HybridCompiledSystem{T}
-    variables::Dict{VariableId,JuMP.VariableRef}
+    variables::VariableReferences
     constraints::Vector{Any}
     nonlinear_constraints::Vector{Any}
     source_revision::UInt64
     optimizer::O
     direct::Bool
+    names::Bool
 end
 
 _linear_compiled(artifact::HybridJuMPArtifact) = artifact.compiled.linear
@@ -55,7 +56,7 @@ function _add_nonlinear_constraints!(artifact::HybridJuMPArtifact{T}) where {T}
     for instance in artifact.compiled.nonlinear_instances
         template = artifact.compiled.nonlinear_templates[instance.template_key]
         dimension = length(instance.variable_ids)
-        variables = [artifact.variables[id] for id in instance.variable_ids]
+        variables = [artifact.variables[id.slot] for id in instance.variable_ids]
         for residual_index in eachindex(template.residuals)
             value_function = _residual_value_function(template, instance, residual_index)
             gradient_function = _residual_gradient_function(
@@ -86,8 +87,9 @@ function build_model(
     compiled::HybridCompiledSystem{T},
     optimizer;
     direct::Bool=false,
+    names::Bool=false,
 ) where {T}
-    linear = build_model(compiled.linear, optimizer; direct=direct)
+    linear = build_model(compiled.linear, optimizer; direct=direct, names=names)
     artifact = HybridJuMPArtifact(
         linear.model,
         compiled,
@@ -97,6 +99,7 @@ function build_model(
         compiled.linear.source_revision,
         optimizer,
         direct,
+        names,
     )
     return _add_nonlinear_constraints!(artifact)
 end
@@ -111,9 +114,14 @@ end
 
 function rebuildStructure(artifact::HybridJuMPArtifact, system::HubSystem)
     compiled = Compiler.recompileStructure(artifact.compiled, system)
-    return build_model(compiled, artifact.optimizer; direct=artifact.direct)
+    return build_model(
+        compiled,
+        artifact.optimizer;
+        direct=artifact.direct,
+        names=artifact.names,
+    )
 end
 
 solve!(artifact::HybridJuMPArtifact) = (JuMP.optimize!(artifact.model); artifact)
 objective_value(artifact::HybridJuMPArtifact) = JuMP.objective_value(artifact.model)
-value(artifact::HybridJuMPArtifact, id::VariableId) = JuMP.value(artifact.variables[id])
+value(artifact::HybridJuMPArtifact, id::VariableId) = JuMP.value(artifact.variables[id.slot])

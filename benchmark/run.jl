@@ -120,8 +120,8 @@ end
 solve_legacy!(artifact) = optimize!(artifact.model)
 legacy_objective(artifact) = objective_value(artifact.model)
 
-function compile_candidate(system)
-    compiled = Hubs.Compiler.compile_linear(system)
+function compile_candidate(system, library=Hubs.Compiler.ComponentLibrary())
+    compiled = Hubs.Compiler.compile_linear(system; library)
     artifact = Hubs.Backends.build_model(compiled, HiGHS.Optimizer)
     set_silent(artifact.model)
     return artifact
@@ -131,8 +131,12 @@ solve_candidate!(artifact) = Hubs.Backends.solve!(artifact)
 candidate_objective(artifact) = Hubs.Backends.objective_value(artifact)
 
 samples = parse(Int, get(ENV, "HUBS_BENCHMARK_SAMPLES", "3"))
-legacy_system = benchmark_system_legacy()
-candidate_system = benchmark_system_candidate()
+hubs = parse(Int, get(ENV, "HUBS_BENCHMARK_HUBS", "8"))
+steps = parse(Int, get(ENV, "HUBS_BENCHMARK_STEPS", "48"))
+println("benchmark size: hubs=$hubs, steps=$steps, samples=$samples")
+legacy_system = benchmark_system_legacy(; hubs, steps)
+candidate_system = benchmark_system_candidate(; hubs, steps)
+candidate_library = Hubs.Compiler.ComponentLibrary()
 legacy = benchmark_pipeline(
     "legacy",
     legacy_system,
@@ -144,7 +148,7 @@ legacy = benchmark_pipeline(
 candidate = benchmark_pipeline(
     "candidate",
     candidate_system,
-    compile_candidate,
+    system -> compile_candidate(system, candidate_library),
     solve_candidate!,
     candidate_objective;
     samples,
@@ -153,6 +157,43 @@ candidate = benchmark_pipeline(
 isapprox(candidate.objective, legacy.objective; rtol=1.0e-9, atol=1.0e-7) ||
     error("candidate objective $(candidate.objective) differs from legacy objective $(legacy.objective)")
 print_comparison(legacy, candidate)
+
+legacy_matrices_stage = benchmark_stage(
+    "legacy domain -> matrices",
+    () -> Hubs.Matrices(legacy_system);
+    samples,
+)
+legacy_matrices = Hubs.Matrices(legacy_system)
+legacy_backend_stage = benchmark_stage(
+    "legacy matrices -> JuMP",
+    () -> begin
+        model = Hubs.constructModel(legacy_matrices, HiGHS.Optimizer)
+        set_silent(model)
+        model
+    end;
+    samples,
+)
+candidate_ir_stage = benchmark_stage(
+    "candidate domain -> cached IR",
+    () -> Hubs.Compiler.compile_linear(candidate_system; library=candidate_library);
+    samples,
+)
+candidate_ir = Hubs.Compiler.compile_linear(candidate_system; library=candidate_library)
+candidate_backend_stage = benchmark_stage(
+    "candidate IR -> JuMP",
+    () -> begin
+        artifact = Hubs.Backends.build_model(candidate_ir, HiGHS.Optimizer)
+        set_silent(artifact.model)
+        artifact
+    end;
+    samples,
+)
+print_stages(
+    legacy_matrices_stage,
+    legacy_backend_stage,
+    candidate_ir_stage,
+    candidate_backend_stage,
+)
 
 legacy_update = benchmark_operation(
     "legacy rebuild",
@@ -171,7 +212,7 @@ legacy_update = benchmark_operation(
 
 candidate_processes = first.(collect(candidate_system.processes))
 candidate_boundaries = first.(collect(candidate_system.boundaries))
-candidate_compiled = Hubs.Compiler.compile_linear(candidate_system)
+candidate_compiled = Hubs.Compiler.compile_linear(candidate_system; library=candidate_library)
 candidate_artifact = Hubs.Backends.build_model(candidate_compiled, HiGHS.Optimizer)
 set_silent(candidate_artifact.model)
 candidate_update = benchmark_operation(

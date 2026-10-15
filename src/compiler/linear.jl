@@ -44,6 +44,69 @@ struct LinearObjective{T}
     coefficients::Vector{T}
 end
 
+struct TemplateVariable{T}
+    name::Symbol
+    index::Int
+    role::VariableRole
+    domain::VariableDomain
+    lower_bound::T
+    upper_bound::T
+    unit::Any
+end
+
+"""
+The solver-independent, owner-independent expansion of a linear component model.
+
+Column indices are local to the template. Instantiating the template only binds
+those local columns to an owner's global variables and scatters parameter values.
+"""
+struct CompiledLinearTemplate{T}
+    key::Any
+    parameter_specs::Vector{ParameterSpec}
+    variables::Vector{TemplateVariable{T}}
+    rowptr::Vector{Int}
+    local_columns::Vector{Int}
+    coefficient_constants::Vector{T}
+    coefficient_parameter_slots::Vector{Int}
+    coefficient_multipliers::Vector{T}
+    rhs::Vector{T}
+    senses::Vector{ConstraintSense}
+    row_names::Vector{Symbol}
+    row_indices::Vector{Int}
+    objective_local_columns::Vector{Int}
+    objective_constants::Vector{T}
+    objective_parameter_slots::Vector{Int}
+    objective_multipliers::Vector{T}
+end
+
+"""
+    ComponentLibrary()
+
+Cache solver-independent component templates across component instances and
+structural recompilations. A model definition is treated as immutable after it is
+prepared; use a new model definition for structural changes.
+"""
+mutable struct ComponentLibrary
+    linear_templates::Dict{Any,Any}
+    linear_model_variants::IdDict{Any,Dict{Tuple{DataType,Int},Any}}
+    hits::Int
+    misses::Int
+end
+
+ComponentLibrary() = ComponentLibrary(
+    Dict{Any,Any}(),
+    IdDict{Any,Dict{Tuple{DataType,Int},Any}}(),
+    0,
+    0,
+)
+
+"""Return the number of cached templates, cache hits, and cache misses."""
+templateStatistics(library::ComponentLibrary) = (
+    templates=length(library.linear_templates),
+    hits=library.hits,
+    misses=library.misses,
+)
+
 abstract type AbstractParameterUpdate end
 
 struct LinearCoefficientUpdate{T} <: AbstractParameterUpdate
@@ -66,6 +129,7 @@ mutable struct CompiledSystem{T}
     objective::LinearObjective{T}
     parameter_updates::Dict{OwnerRef,Vector{AbstractParameterUpdate}}
     source_revision::UInt64
+    component_library::ComponentLibrary
 end
 
 mutable struct CompilationContext{T}
@@ -99,7 +163,204 @@ else
     throw(ArgumentError("unsupported variable axes $(specification.axes); currently supported axes are () and (:time,)"))
 end
 
+_axis_length(specification::VariableSpec, steps::Int) = if isempty(specification.axes)
+    1
+elseif specification.axes == (:time,)
+    steps
+else
+    throw(ArgumentError("unsupported variable axes $(specification.axes); currently supported axes are () and (:time,)"))
+end
+
 _variable_index(specification::VariableSpec, position::Int) = isempty(specification.axes) ? 0 : position
+
+_coefficient_signature(coefficient::ConstantCoefficient) = (:constant, coefficient.value)
+_coefficient_signature(coefficient::ParameterCoefficient) =
+    (:parameter, coefficient.parameter, coefficient.multiplier)
+
+function _linear_template_key(model::LinearComponentModel, steps::Int, ::Type{T}) where {T}
+    variable_signature = Tuple(
+        (
+            specification.name,
+            specification.role,
+            specification.domain,
+            specification.lower_bound,
+            specification.upper_bound,
+            specification.unit,
+            specification.axes,
+        ) for specification in variables(model)
+    )
+    parameter_signature = Tuple(
+        (specification.name, specification.default, specification.unit, specification.axes)
+        for specification in parameters(model)
+    )
+    equation_signature = Tuple(
+        (
+            equation.name,
+            equation.sense,
+            equation.rhs,
+            Tuple((term.variable, _coefficient_signature(term.coefficient)) for term in equation.terms),
+        ) for equation in equations(model)
+    )
+    objective_signature = Tuple(
+        (term.variable, _coefficient_signature(term.coefficient))
+        for term in objective_terms(model)
+    )
+    return (T, steps, variable_signature, parameter_signature, equation_signature, objective_signature)
+end
+
+function _build_linear_template(model::LinearComponentModel, steps::Int, ::Type{T}, key) where {T}
+    specifications = Dict(specification.name => specification for specification in variables(model))
+    parameter_slots = Dict(
+        specification.name => position
+        for (position, specification) in enumerate(parameters(model))
+    )
+
+    template_variables = TemplateVariable{T}[]
+    local_lookup = Dict{Tuple{Symbol,Int},Int}()
+    for specification in variables(model)
+        for position in 1:_axis_length(specification, steps)
+            index = _variable_index(specification, position)
+            push!(template_variables, TemplateVariable{T}(
+                specification.name,
+                index,
+                specification.role,
+                specification.domain,
+                T(specification.lower_bound),
+                T(specification.upper_bound),
+                specification.unit,
+            ))
+            local_lookup[(specification.name, index)] = length(template_variables)
+        end
+    end
+
+    equation_instances = Int[]
+    total_rows = 0
+    total_terms = 0
+    for equation in equations(model)
+        timed = any(specifications[term.variable].axes == (:time,) for term in equation.terms)
+        instances = timed ? steps : 1
+        push!(equation_instances, instances)
+        total_rows += instances
+        total_terms += length(equation.terms) * instances
+    end
+
+    rowptr = Vector{Int}(undef, total_rows + 1)
+    local_columns = Vector{Int}(undef, total_terms)
+    coefficient_constants = zeros(T, total_terms)
+    coefficient_parameter_slots = zeros(Int, total_terms)
+    coefficient_multipliers = zeros(T, total_terms)
+    rhs = Vector{T}(undef, total_rows)
+    senses = Vector{ConstraintSense}(undef, total_rows)
+    row_names = Vector{Symbol}(undef, total_rows)
+    row_indices = Vector{Int}(undef, total_rows)
+    rowptr[1] = 1
+
+    row = 0
+    term_position = 0
+    for (equation_position, equation) in enumerate(equations(model))
+        instances = equation_instances[equation_position]
+        for instance in 1:instances
+            row += 1
+            row_names[row] = equation.name
+            row_indices[row] = instances == 1 ? 0 : instance
+            rhs[row] = T(equation.rhs)
+            senses[row] = equation.sense
+            for term in equation.terms
+                term_position += 1
+                specification = specifications[term.variable]
+                local_index = isempty(specification.axes) ? 0 : instance
+                local_columns[term_position] = local_lookup[(term.variable, local_index)]
+                if term.coefficient isa ConstantCoefficient
+                    coefficient_constants[term_position] = T(term.coefficient.value)
+                else
+                    coefficient_parameter_slots[term_position] = parameter_slots[term.coefficient.parameter]
+                    coefficient_multipliers[term_position] = T(term.coefficient.multiplier)
+                end
+            end
+            rowptr[row + 1] = term_position + 1
+        end
+    end
+
+    objective_count = sum(
+        _axis_length(specifications[term.variable], steps)
+        for term in objective_terms(model);
+        init=0,
+    )
+    objective_local_columns = Vector{Int}(undef, objective_count)
+    objective_constants = zeros(T, objective_count)
+    objective_parameter_slots = zeros(Int, objective_count)
+    objective_multipliers = zeros(T, objective_count)
+    objective_position = 0
+    for term in objective_terms(model)
+        specification = specifications[term.variable]
+        for position in 1:_axis_length(specification, steps)
+            objective_position += 1
+            index = _variable_index(specification, position)
+            objective_local_columns[objective_position] = local_lookup[(term.variable, index)]
+            if term.coefficient isa ConstantCoefficient
+                objective_constants[objective_position] = T(term.coefficient.value)
+            else
+                objective_parameter_slots[objective_position] = parameter_slots[term.coefficient.parameter]
+                objective_multipliers[objective_position] = T(term.coefficient.multiplier)
+            end
+        end
+    end
+
+    return CompiledLinearTemplate{T}(
+        key,
+        copy(parameters(model)),
+        template_variables,
+        rowptr,
+        local_columns,
+        coefficient_constants,
+        coefficient_parameter_slots,
+        coefficient_multipliers,
+        rhs,
+        senses,
+        row_names,
+        row_indices,
+        objective_local_columns,
+        objective_constants,
+        objective_parameter_slots,
+        objective_multipliers,
+    )
+end
+
+"""
+    prepareModel(library, model; steps=1, numeric_type=Float64)
+
+Expand a linear component definition into a reusable local sparse template. Calls
+with the same model, numeric type, and time-axis length reuse the cached template.
+"""
+function prepareModel(
+    library::ComponentLibrary,
+    model::LinearComponentModel;
+    steps::Integer=1,
+    numeric_type::Type{T}=Float64,
+) where {T<:Real}
+    steps > 0 || throw(ArgumentError("steps must be positive"))
+    variant_key = (T, Int(steps))
+    variants = get!(library.linear_model_variants, model) do
+        Dict{Tuple{DataType,Int},Any}()
+    end
+    if haskey(variants, variant_key)
+        library.hits += 1
+        return variants[variant_key]::CompiledLinearTemplate{T}
+    end
+
+    key = _linear_template_key(model, variant_key[2], T)
+    if haskey(library.linear_templates, key)
+        library.hits += 1
+        template = library.linear_templates[key]::CompiledLinearTemplate{T}
+        variants[variant_key] = template
+        return template
+    end
+    template = _build_linear_template(model, variant_key[2], T, key)
+    library.linear_templates[key] = template
+    variants[variant_key] = template
+    library.misses += 1
+    return template
+end
 
 function _register_variables!(context::CompilationContext{T}, system::HubSystem, owner, model) where {T}
     for specification in variables(model)
@@ -136,93 +397,92 @@ function _resolved_parameters(model, values)
     return resolved
 end
 
-function _equation_instances(equation::LinearEquation, model::LinearComponentModel, system::HubSystem)
-    by_name = Dict(specification.name => specification for specification in variables(model))
-    timed = any(by_name[term.variable].axes == (:time,) for term in equation.terms)
-    return timed ? system.steps : 1
-end
-
-function _compile_component_block(
+function _instantiate_template!(
     context::CompilationContext{T},
-    system::HubSystem,
     owner,
-    model::LinearComponentModel,
+    template::CompiledLinearTemplate{T},
     parameter_values,
 ) where {T}
+    owner_ref = OwnerRef(owner)
+    local_variable_ids = Vector{VariableId}(undef, length(template.variables))
+    for (position, specification) in enumerate(template.variables)
+        key = VariableKey(owner_ref, specification.name, specification.index)
+        haskey(context.variable_lookup, key) && throw(ArgumentError("duplicate compiled variable $key"))
+        variable = CompiledVariable{T}(
+            key,
+            specification.role,
+            specification.domain,
+            specification.lower_bound,
+            specification.upper_bound,
+            specification.unit,
+        )
+        id = push!(context.variables, variable)
+        context.variable_lookup[key] = id
+        local_variable_ids[position] = id
+    end
+
+    resolved_parameters = Vector{T}(undef, length(template.parameter_specs))
+    for (position, specification) in enumerate(template.parameter_specs)
+        resolved_parameters[position] = T(parameter_value(specification, parameter_values))
+    end
+
     block_index = length(context.blocks) + 1
-    total_rows = sum(
-        (_equation_instances(equation, model, system) for equation in equations(model));
-        init=0,
-    )
-    total_terms = sum(
-        length(equation.terms) * _equation_instances(equation, model, system)
-        for equation in equations(model);
-        init=0,
-    )
-
-    rowptr = Vector{Int}(undef, total_rows + 1)
-    variable_ids = Vector{VariableId}(undef, total_terms)
-    coefficients = Vector{T}(undef, total_terms)
-    rhs = Vector{T}(undef, total_rows)
-    senses = Vector{ConstraintSense}(undef, total_rows)
-    rows = Vector{ConstraintKey}(undef, total_rows)
-    rowptr[1] = 1
-
-    specifications = Dict(specification.name => specification for specification in variables(model))
-    parameter_map = _resolved_parameters(model, parameter_values)
-    row = 0
-    term_position = 0
-    for equation in equations(model)
-        instances = _equation_instances(equation, model, system)
-        for instance in 1:instances
-            row += 1
-            rows[row] = ConstraintKey(OwnerRef(owner), equation.name, instances == 1 ? 0 : instance)
-            rhs[row] = T(equation.rhs)
-            senses[row] = equation.sense
-            for term in equation.terms
-                term_position += 1
-                specification = specifications[term.variable]
-                variable_index = isempty(specification.axes) ? 0 : instance
-                key = VariableKey(OwnerRef(owner), term.variable, variable_index)
-                variable_ids[term_position] = context.variable_lookup[key]
-                coefficients[term_position] = T(coefficient_value(term.coefficient, parameter_map))
-                if term.coefficient isa ParameterCoefficient
-                    _record_parameter_update!(context, owner, LinearCoefficientUpdate{T}(
-                        term.coefficient.parameter,
-                        block_index,
-                        term_position,
-                        T(term.coefficient.multiplier),
-                    ))
-                end
-            end
-            rowptr[row + 1] = term_position + 1
+    variable_ids = Vector{VariableId}(undef, length(template.local_columns))
+    coefficients = copy(template.coefficient_constants)
+    for position in eachindex(template.local_columns)
+        variable_ids[position] = local_variable_ids[template.local_columns[position]]
+        parameter_slot = template.coefficient_parameter_slots[position]
+        if parameter_slot != 0
+            multiplier = template.coefficient_multipliers[position]
+            coefficients[position] = multiplier * resolved_parameters[parameter_slot]
+            _record_parameter_update!(context, owner, LinearCoefficientUpdate{T}(
+                template.parameter_specs[parameter_slot].name,
+                block_index,
+                position,
+                multiplier,
+            ))
         end
     end
 
-    block = LinearBlock{T}(OwnerRef(owner), rowptr, variable_ids, coefficients, rhs, senses, rows)
-    push!(context.blocks, block)
+    rows = Vector{ConstraintKey}(undef, length(template.row_names))
+    for position in eachindex(rows)
+        rows[position] = ConstraintKey(
+            owner_ref,
+            template.row_names[position],
+            template.row_indices[position],
+        )
+    end
+    push!(context.blocks, LinearBlock{T}(
+        owner_ref,
+        copy(template.rowptr),
+        variable_ids,
+        coefficients,
+        copy(template.rhs),
+        copy(template.senses),
+        rows,
+    ))
 
-    objective_count = sum(
-        _axis_length(specifications[term.variable], system)
-        for term in objective_terms(model);
-        init=0,
-    )
-    sizehint!(context.objective_variable_ids, length(context.objective_variable_ids) + objective_count)
-    sizehint!(context.objective_coefficients, length(context.objective_coefficients) + objective_count)
-    for term in objective_terms(model)
-        specification = specifications[term.variable]
-        for position in 1:_axis_length(specification, system)
-            index = _variable_index(specification, position)
-            push!(context.objective_variable_ids, context.variable_lookup[VariableKey(OwnerRef(owner), term.variable, index)])
-            push!(context.objective_coefficients, T(coefficient_value(term.coefficient, parameter_map)))
-            if term.coefficient isa ParameterCoefficient
-                _record_parameter_update!(context, owner, ObjectiveCoefficientUpdate{T}(
-                    term.coefficient.parameter,
-                    length(context.objective_coefficients),
-                    T(term.coefficient.multiplier),
-                ))
-            end
+    objective_start = length(context.objective_variable_ids)
+    objective_count = length(template.objective_local_columns)
+    sizehint!(context.objective_variable_ids, objective_start + objective_count)
+    sizehint!(context.objective_coefficients, objective_start + objective_count)
+    for position in eachindex(template.objective_local_columns)
+        push!(
+            context.objective_variable_ids,
+            local_variable_ids[template.objective_local_columns[position]],
+        )
+        parameter_slot = template.objective_parameter_slots[position]
+        coefficient = template.objective_constants[position]
+        if parameter_slot != 0
+            multiplier = template.objective_multipliers[position]
+            coefficient = multiplier * resolved_parameters[parameter_slot]
+            _record_parameter_update!(context, owner, ObjectiveCoefficientUpdate{T}(
+                template.parameter_specs[parameter_slot].name,
+                objective_start + position,
+                multiplier,
+            ))
         end
+        push!(context.objective_coefficients, coefficient)
     end
     return context
 end
@@ -335,28 +595,40 @@ function _compile_hub_block(context::CompilationContext{T}, system::HubSystem, h
     return context
 end
 
-function _compile_registry!(context::CompilationContext{T}, system::HubSystem, registry) where {T}
-    for (id, component) in registry
-        component.model isa NoModel && continue
-        _register_variables!(context, system, id, component.model)
-    end
+function _compile_registry!(
+    context::CompilationContext{T},
+    system::HubSystem,
+    registry,
+    library::ComponentLibrary,
+) where {T}
     for (id, component) in registry
         component.model isa NoModel && continue
         if component.model isa LinearComponentModel
-            _compile_component_block(context, system, id, component.model, component.parameters)
-        elseif !(component.model isa SymbolicComponentModel)
+            template = prepareModel(
+                library,
+                component.model;
+                steps=system.steps,
+                numeric_type=T,
+            )
+            _instantiate_template!(context, id, template, component.parameters)
+        elseif component.model isa SymbolicComponentModel
+            _register_variables!(context, system, id, component.model)
+        else
             throw(ArgumentError("unsupported component model $(typeof(component.model))"))
         end
     end
     return context
 end
 
-function compile_linear(system::HubSystem{T}) where {T}
+function compile_linear(
+    system::HubSystem{T};
+    library::ComponentLibrary=ComponentLibrary(),
+) where {T}
     context = CompilationContext{T}()
-    _compile_registry!(context, system, system.processes)
-    _compile_registry!(context, system, system.storages)
-    _compile_registry!(context, system, system.networks)
-    _compile_registry!(context, system, system.boundaries)
+    _compile_registry!(context, system, system.processes, library)
+    _compile_registry!(context, system, system.storages, library)
+    _compile_registry!(context, system, system.networks, library)
+    _compile_registry!(context, system, system.boundaries, library)
 
     for (hub_id, hub) in system.hubs
         _compile_hub_block(context, system, hub_id, hub)
@@ -369,6 +641,7 @@ function compile_linear(system::HubSystem{T}) where {T}
         LinearObjective{T}(context.objective_variable_ids, context.objective_coefficients),
         context.parameter_updates,
         system.revision,
+        library,
     )
 end
 

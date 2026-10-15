@@ -74,6 +74,60 @@
     @test compiled.variables[C.variable_id(compiled, process_id, :fuel, 1)].unit == :MW
 end
 
+@testset "Reusable linear component templates" begin
+    D = Hubs.Domain
+    C = Hubs.Compiler
+
+    system = D.HubSystem(steps=3)
+    material = D.addCarrier(system, D.Carrier(:material))
+    hub = D.addHub(system, D.Hub(:plant))
+    model = D.LinearComponentModel(
+        [D.VariableSpec(:flow, D.OutputFlow; lower_bound=0.0)],
+        [D.ParameterSpec(:yield)],
+        [D.LinearEquation(
+            :production,
+            [D.LinearTerm(:flow, D.ParameterCoefficient(:yield))];
+            rhs=1.0,
+        )],
+    )
+
+    process_ids = [
+        D.addProcess(system, hub, D.Process(
+            Symbol(:source_, index),
+            [D.Port(:output, material, D.Output; variable=:flow)],
+            model;
+            parameters=(yield=Float64(index),),
+        ))
+        for index in 1:3
+    ]
+
+    library = C.ComponentLibrary()
+    C.prepareModel(library, model; steps=system.steps, numeric_type=Float64)
+    prepared = C.templateStatistics(library)
+    @test prepared.templates == 1
+    @test prepared.misses == 1
+    @test prepared.hits == 0
+
+    compiled = C.compile_linear(system; library)
+    after_first_compile = C.templateStatistics(library)
+    @test after_first_compile.templates == 1
+    @test after_first_compile.misses == 1
+    @test after_first_compile.hits == 3
+    @test compiled.component_library === library
+
+    for (index, process_id) in enumerate(process_ids)
+        block = only(block for block in compiled.blocks if block.owner == C.OwnerRef(process_id))
+        @test block.coefficients == fill(Float64(index), system.steps)
+    end
+
+    compiled_again = C.compile_linear(system; library)
+    after_second_compile = C.templateStatistics(library)
+    @test after_second_compile.templates == 1
+    @test after_second_compile.misses == 1
+    @test after_second_compile.hits == 6
+    @test compiled_again.objective.coefficients == compiled.objective.coefficients
+end
+
 @testset "Float32 compiler storage and native indices" begin
     D = Hubs.Domain
     C = Hubs.Compiler

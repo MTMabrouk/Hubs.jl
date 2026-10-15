@@ -1,8 +1,9 @@
-struct JuMPArtifact{T}
+mutable struct JuMPArtifact{T}
     model::JuMP.Model
     compiled::CompiledSystem{T}
     variables::Dict{VariableId,JuMP.VariableRef}
     constraints::Vector{Any}
+    source_revision::UInt64
 end
 
 function _add_variable(model::JuMP.Model, variable::CompiledVariable)
@@ -64,7 +65,55 @@ function build_model(compiled::CompiledSystem{T}, optimizer) where {T}
     end
     JuMP.set_objective_sense(model, JuMP.MOI.MIN_SENSE)
     JuMP.set_objective_function(model, objective)
-    return JuMPArtifact{T}(model, compiled, variable_references, constraints)
+    return JuMPArtifact{T}(
+        model,
+        compiled,
+        variable_references,
+        constraints,
+        compiled.source_revision,
+    )
+end
+
+function _sync_linear_constraints!(artifact::JuMPArtifact)
+    constraint_index = 0
+    for block in artifact.compiled.blocks
+        for row in 1:length(block)
+            constraint_index += 1
+            reference = artifact.constraints[constraint_index]
+            coefficients = Dict{VariableId,eltype(block.coefficients)}()
+            for position in block.rowptr[row]:(block.rowptr[row + 1] - 1)
+                id = block.variable_ids[position]
+                coefficients[id] = get(coefficients, id, zero(eltype(block.coefficients))) +
+                    block.coefficients[position]
+            end
+            for (id, coefficient) in coefficients
+                JuMP.set_normalized_coefficient(reference, artifact.variables[id], coefficient)
+            end
+            JuMP.set_normalized_rhs(reference, block.rhs[row])
+        end
+    end
+    return artifact
+end
+
+function _sync_linear_objective!(artifact::JuMPArtifact)
+    coefficients = Dict{VariableId,eltype(artifact.compiled.objective.coefficients)}()
+    for position in eachindex(artifact.compiled.objective.variable_ids)
+        id = artifact.compiled.objective.variable_ids[position]
+        coefficients[id] = get(coefficients, id, zero(eltype(artifact.compiled.objective.coefficients))) +
+            artifact.compiled.objective.coefficients[position]
+    end
+    for (id, coefficient) in coefficients
+        JuMP.set_objective_coefficient(artifact.model, artifact.variables[id], coefficient)
+    end
+    return artifact
+end
+
+function refreshParameters(artifact::JuMPArtifact, system::HubSystem)
+    Compiler.refreshParameters(artifact.compiled, system)
+    _sync_linear_constraints!(artifact)
+    _sync_linear_objective!(artifact)
+    artifact.source_revision = artifact.compiled.source_revision
+    return artifact
 end
 
 solve!(artifact::JuMPArtifact) = (JuMP.optimize!(artifact.model); artifact)

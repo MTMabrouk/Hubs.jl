@@ -153,3 +153,44 @@ candidate = benchmark_pipeline(
 isapprox(candidate.objective, legacy.objective; rtol=1.0e-9, atol=1.0e-7) ||
     error("candidate objective $(candidate.objective) differs from legacy objective $(legacy.objective)")
 print_comparison(legacy, candidate)
+
+legacy_update = benchmark_operation(
+    "legacy rebuild",
+    () -> begin
+        for hub in legacy_system.hubs
+            hub.units[1].globalEfficiency = 0.55
+            fill!(hub.purchasePorts[1].cost, 2.1)
+        end
+        artifact = compile_legacy(legacy_system)
+        solve_legacy!(artifact)
+        artifact
+    end,
+    legacy_objective;
+    samples,
+)
+
+candidate_processes = first.(collect(candidate_system.processes))
+candidate_boundaries = first.(collect(candidate_system.boundaries))
+candidate_compiled = Hubs.Compiler.compile_linear(candidate_system)
+candidate_artifact = Hubs.Backends.build_model(candidate_compiled, HiGHS.Optimizer)
+set_silent(candidate_artifact.model)
+candidate_update = benchmark_operation(
+    "candidate in-place",
+    () -> begin
+        for id in candidate_processes
+            Hubs.Domain.setParameters(candidate_system, id; efficiency=0.55)
+        end
+        for id in candidate_boundaries
+            Hubs.Domain.setParameters(candidate_system, id; price=2.1)
+        end
+        Hubs.Backends.refreshParameters(candidate_artifact, candidate_system)
+        solve_candidate!(candidate_artifact)
+        candidate_artifact
+    end,
+    candidate_objective;
+    samples,
+)
+
+isapprox(candidate_update.objective, legacy_update.objective; rtol=1.0e-9, atol=1.0e-7) ||
+    error("updated candidate objective $(candidate_update.objective) differs from legacy objective $(legacy_update.objective)")
+print_operation_comparison(legacy_update, candidate_update)

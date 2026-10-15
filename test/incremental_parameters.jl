@@ -51,6 +51,11 @@ using JuMP
     variables_before = compiled.variables
     rowptr_before = first(compiled.blocks).rowptr
     revision_before = compiled.source_revision
+    artifact = B.build_model(compiled, HiGHS.Optimizer)
+    model_before = artifact.model
+    set_silent(artifact.model)
+    B.solve!(artifact)
+    @test B.objective_value(artifact) ≈ 40.0
 
     D.setParameters(system, process_id; efficiency=0.8)
     D.setParameters(system, boundary_id; price=3.0)
@@ -60,16 +65,15 @@ using JuMP
     @test length(changes.changes) == 2
     @test all(change.kind == D.ParameterUpdate for change in changes.changes)
 
-    C.refreshParameters(compiled, system)
+    B.refreshParameters(artifact, system)
     @test compiled.variables === variables_before
     @test first(compiled.blocks).rowptr === rowptr_before
     @test compiled.source_revision == system.revision
+    @test artifact.model === model_before
     process_block = only(block for block in compiled.blocks if block.owner == C.OwnerRef(process_id))
     @test process_block.coefficients == [1.0, -0.8]
     @test compiled.objective.coefficients == [3.0]
 
-    artifact = B.build_model(compiled, HiGHS.Optimizer)
-    set_silent(artifact.model)
     B.solve!(artifact)
     @test termination_status(artifact.model) == JuMP.MOI.OPTIMAL
     @test B.objective_value(artifact) ≈ 37.5

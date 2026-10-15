@@ -2,7 +2,12 @@ module HubsBenchmarkHarness
 
 using Statistics
 
-export BenchmarkResult, benchmark_pipeline, print_comparison
+export BenchmarkResult,
+    OperationResult,
+    benchmark_operation,
+    benchmark_pipeline,
+    print_comparison,
+    print_operation_comparison
 
 struct BenchmarkResult
     name::String
@@ -10,6 +15,13 @@ struct BenchmarkResult
     compile_bytes::Int
     solve_seconds::Float64
     solve_bytes::Int
+    objective::Float64
+end
+
+struct OperationResult
+    name::String
+    seconds::Float64
+    bytes::Int
     objective::Float64
 end
 
@@ -77,6 +89,25 @@ function benchmark_pipeline(
     )
 end
 
+function benchmark_operation(
+    name::AbstractString,
+    operation::F,
+    objective::O;
+    samples::Int=3,
+) where {F,O}
+    samples > 0 || throw(ArgumentError("samples must be positive"))
+    redirect_stdout(devnull) do
+        operation()
+    end
+    result = Ref{Any}()
+    seconds, bytes = _measure(samples) do
+        result[] = redirect_stdout(devnull) do
+            operation()
+        end
+    end
+    return OperationResult(String(name), seconds, bytes, Float64(objective(result[])))
+end
+
 function _print_result(result::BenchmarkResult)
     println(
         rpad(result.name, 14),
@@ -101,6 +132,25 @@ function print_comparison(legacy::BenchmarkResult, candidates::BenchmarkResult..
             "x",
         )
     end
+    return nothing
+end
+
+function print_operation_comparison(legacy::OperationResult, candidate::OperationResult)
+    println()
+    println("repeated update + solve       time ms       MiB           objective")
+    for result in (legacy, candidate)
+        println(
+            rpad(result.name, 25),
+            lpad(round(result.seconds * 1_000; digits=2), 10),
+            lpad(round(result.bytes / 2.0^20; digits=2), 10),
+            lpad(round(result.objective; sigdigits=10), 20),
+        )
+    end
+    println(
+        "  candidate speedup: ",
+        round(legacy.seconds / candidate.seconds; digits=2),
+        "x",
+    )
     return nothing
 end
 

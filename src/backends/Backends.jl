@@ -5,8 +5,10 @@ using ..Domain
 using ..Compiler
 
 include("jump.jl")
+include("nonlinear_jump.jl")
 
-export JuMPArtifact,
+export HybridJuMPArtifact,
+    JuMPArtifact,
     build_model,
     objective_value,
     rebuildStructure,

@@ -28,7 +28,7 @@ function _constraint_set(sense::ConstraintSense, rhs)
 end
 
 function build_model(compiled::CompiledSystem{T}, optimizer) where {T}
-    model = JuMP.Model(optimizer)
+    model = isnothing(optimizer) ? JuMP.Model() : JuMP.Model(optimizer)
     variable_references = Dict{VariableId,JuMP.VariableRef}()
     sizehint!(variable_references, length(compiled.variables))
     for (id, variable) in compiled.variables
@@ -76,9 +76,12 @@ function build_model(compiled::CompiledSystem{T}, optimizer) where {T}
     )
 end
 
-function _sync_linear_constraints!(artifact::JuMPArtifact)
+_linear_compiled(artifact::JuMPArtifact) = artifact.compiled
+
+function _sync_linear_constraints!(artifact)
+    compiled = _linear_compiled(artifact)
     constraint_index = 0
-    for block in artifact.compiled.blocks
+    for block in compiled.blocks
         for row in 1:length(block)
             constraint_index += 1
             reference = artifact.constraints[constraint_index]
@@ -97,12 +100,13 @@ function _sync_linear_constraints!(artifact::JuMPArtifact)
     return artifact
 end
 
-function _sync_linear_objective!(artifact::JuMPArtifact)
-    coefficients = Dict{VariableId,eltype(artifact.compiled.objective.coefficients)}()
-    for position in eachindex(artifact.compiled.objective.variable_ids)
-        id = artifact.compiled.objective.variable_ids[position]
-        coefficients[id] = get(coefficients, id, zero(eltype(artifact.compiled.objective.coefficients))) +
-            artifact.compiled.objective.coefficients[position]
+function _sync_linear_objective!(artifact)
+    compiled = _linear_compiled(artifact)
+    coefficients = Dict{VariableId,eltype(compiled.objective.coefficients)}()
+    for position in eachindex(compiled.objective.variable_ids)
+        id = compiled.objective.variable_ids[position]
+        coefficients[id] = get(coefficients, id, zero(eltype(compiled.objective.coefficients))) +
+            compiled.objective.coefficients[position]
     end
     for (id, coefficient) in coefficients
         JuMP.set_objective_coefficient(artifact.model, artifact.variables[id], coefficient)

@@ -49,6 +49,7 @@ end
 
 function _attach!(system::HubSystem, hub_id::HubId, registry, component, field::Symbol)
     hub = system.hubs[hub_id]
+    validate_component(component)
     id = push!(registry, component)
     push!(getfield(hub, field), id)
     _changed!(system)
@@ -71,6 +72,7 @@ addRecycleLink(system::HubSystem, hub::HubId, link::RecycleLink) =
     _attach!(system, hub, system.recycle_links, link, :recycle_links)
 
 function addNetwork(system::HubSystem, network::Network)
+    validate_component(network)
     for located_port in network.ports
         system.hubs[located_port.hub]
         system.carriers[located_port.port.carrier]

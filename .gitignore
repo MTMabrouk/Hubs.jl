@@ -16,3 +16,7 @@ CLAUDE.md
 /.cursor/
 /docs/superpowers/
 /.github/copilot-instructions.md
+
+# Local benchmark output (benchmark source code remains tracked)
+/benchmark/results/
+/benchmark/Manifest.toml

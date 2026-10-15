@@ -1,0 +1,8 @@
+[parameters]
+discount_rate = { default = 0.05 }
+
+[objective]
+minimize =
+    sum_components(annualize(capex, discount_rate, lifetime))
+    + sum_t(duration(t) * weight(t) * sum_components(variable_om(t)))
+;

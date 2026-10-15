@@ -1,0 +1,41 @@
+# Storage model used by the language and compiler integration tests.
+[model]
+id = battery
+kind = storage
+
+[parameters]
+existing_power = { unit = MW, default = 0.0 }
+existing_energy = { unit = MWh, default = 0.0 }
+initial_energy = { unit = MWh, default = 0.0 }
+charge_efficiency = { default = 1.0 }
+discharge_efficiency = { default = 1.0 }
+specific_power_capex = { unit = EUR_per_MW }
+specific_energy_capex = { unit = EUR_per_MWh }
+lifetime = { unit = year }
+variable_cost = { unit = EUR_per_MWh, axes = [time], default = 0.0 }
+
+[variables]
+@inlet p_charge = { carrier = electricity }
+@outlet p_discharge = { carrier = electricity }
+energy = { unit = MWh, lower = 0.0 }
+power_added = { unit = MW, axes = [], lower = 0.0 }
+energy_added = { unit = MWh, axes = [], lower = 0.0 }
+
+[expressions]
+installed_power = existing_power + power_added;
+installed_energy = existing_energy + energy_added;
+capex = specific_power_capex * power_added + specific_energy_capex * energy_added;
+variable_om(t) = variable_cost(t) * p_charge(t);
+
+[equations]
+charge_limit = p_charge(t) <= installed_power;
+discharge_limit = p_discharge(t) <= installed_power;
+energy_limit = energy(t) <= installed_energy;
+initial_state = energy(first(time)) ~ initial_energy;
+
+@boundary(drop)
+energy_balance =
+    energy(t + 1) ~ energy(t)
+    + duration(t) * charge_efficiency * p_charge(t)
+    - duration(t) * p_discharge(t) / discharge_efficiency
+;

@@ -5,6 +5,7 @@ version = "0.1.0"
 
 [deps]
 Gurobi = "2e9cd046-0924-5485-92f1-d5272153d98b"
+HubsParser = "c414a167-93c8-4595-bf09-2ae5ba0ab7fb"
 JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"

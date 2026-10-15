@@ -20,3 +20,4 @@ CLAUDE.md
 # Local benchmark output (benchmark source code remains tracked)
 /benchmark/results/
 /benchmark/Manifest.toml
+/lib/HubsParser/Manifest.toml
